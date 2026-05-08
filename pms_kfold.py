@@ -30,7 +30,7 @@ IMAGE_NAME = "gkousiou/laboctave"
 
 
 K_FOLDS = 5
-NEURONS_LAYERS = "5-38"
+NEURONS_LAYERS = "4-45"
 
 
 LOG_FILE = f"experiment_logs_{NEURONS_LAYERS}.txt"
