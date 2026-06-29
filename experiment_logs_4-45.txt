@@ -1,0 +1,16 @@
+
+================================================================================
+RUN TIMESTAMP: 2026-05-08 16:07:00
+DATA FILE: master_dataset.csv
+IMAGE: gkousiou/laboctave
+LOCAL PMS REPO: /home/pekoto/repos/PMS-octave
+CONFIG: 3 Inputs -> 1 Target | 5-Fold CV | 4-45
+CLAMP NEGATIVE PREDICTIONS: True
+PMS INTERNAL GRAPH MAPES: ['14.31%', '20.42%', '14.41%', '16.26%', '12.30%']
+EXTERNAL FOLD MAPES (mean abs % vs actual): ['13.01%', '20.99%', '9.52%', '14.87%', '13.07%']
+EXTERNAL FOLD SMAPEs (symmetric): ['11.68%', '18.42%', '9.59%', '12.91%', '14.38%']
+FINAL EXTERNAL POOLED MAPE:  14.29%
+FINAL EXTERNAL POOLED SMAPE: 13.40%
+FINAL EXTERNAL POOLED MAE:   2684.151581
+FINAL EXTERNAL POOLED RMSE:  8335.557936
+================================================================================
