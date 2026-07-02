@@ -10,18 +10,42 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.compose import TransformedTargetRegressor
 
+# ── ENV OVERRIDES (optional) ─────────────────────────────────────────
+# Small helpers so a fast SMOKE RUN is possible without editing this file.
+# Every override defaults to the value baked in below, so leaving the env
+# vars unset reproduces the original behavior exactly.
+def _env_int(name, default):
+    val = os.environ.get(name)
+    if val is None or val.strip() == "":
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+def _env_seed(name, default):
+    """Return None (stochastic) unless PMS_SEED is set to an integer."""
+    return _env_int(name, default)
+
 # ── CONFIG ───────────────────────────────────────────────────────────
 DATA_FILE  = "master_dataset.csv"   # swap this to run calibration variants
 RESULTS_DIR = "cmaes_results"
 MODEL_TAG  = "NSMT"                 # label for this run  e.g. NSMT, NSMKT, etc.
 
-N_FOLDS     = 5      # TRUE k-fold cross-validation (KFOLD=5), like pms_kfold.py
+N_FOLDS     = _env_int("PMS_FOLDS", 5)
+                     # TRUE k-fold cross-validation (KFOLD=5), like pms_kfold.py.
                      # The 630 rows are cut into 5 disjoint folds; each fold is
                      # the test set exactly once, so every row is tested once.
+                     # (Overridable via PMS_FOLDS for a fast smoke run.)
 KFOLD_SEED  = 42     # fixed seed → reproducible folds (matches pms_kfold.py)
 VAL_RATIO   = 0.20   # 20% of the 4 training folds used as CMA-ES fitness
                      # signal (= PMS medval).  This is the inner model-selection
                      # split, nested inside each outer fold.
+
+# Reproducibility seed for the STOCHASTIC parts (inner val split, MLP training,
+# and CMA-ES sampling).  Default None → non-deterministic, like the Octave GA.
+# Set PMS_SEED=<int> to make a full run reproducible.
+SEED        = _env_seed("PMS_SEED", None)
 
 # Architecture search space — same ceiling as PMS best (NLmax=5, NperLmax=55)
 # CMA-ES searches TWO continuous variables in [0, 1]:
@@ -30,9 +54,11 @@ VAL_RATIO   = 0.20   # 20% of the 4 training folds used as CMA-ES fitness
 # All layers share the same neuron count (simplification vs PMS per-layer encoding).
 # Activation fixed to 'relu' (standard Python equivalent of PMS tansig/logsig mix).
 
-CMA_MAX_EVAL = 200   # CMA-ES evaluation budget per run
+CMA_MAX_EVAL = _env_int("PMS_MAXEVAL", 200)
+                     # CMA-ES evaluation budget per run.
                      # PMS uses pop=30 × gen=30 = 900 evals, but CMA-ES is
                      # more sample-efficient — 200 is sufficient for 2D search.
+                     # (Overridable via PMS_MAXEVAL for a fast smoke run.)
 
 # Stopping threshold: same concept as PMS "medval MAPE < 20% gate"
 # If the best MAPE found by CMA-ES never drops below this, note it in the log.
@@ -52,6 +78,8 @@ def safe_mape(y_true, y_pred):
     return float(np.mean(np.abs(y_true - y_pred) / denom) * 100)   # in percent
 
 def _smape(a, p):
+    # NOTE: this returns the fraction 2|a-p|/(|a|+|p|), i.e. a 0..2 range that
+    # is reported as 0..200% (the "%" fields multiply by 100 downstream).
     a, p = np.asarray(a, float), np.asarray(p, float)
     num  = np.abs(a - p)
     den  = np.abs(a) + np.abs(p)
@@ -63,6 +91,24 @@ def _mae(a, p):
 
 def _rmse(a, p):
     return float(np.sqrt(np.mean((np.asarray(a, float) - np.asarray(p, float)) ** 2)))
+
+def safe_r2(y_true, y_pred):
+    """
+    Coefficient of determination R^2 = 1 - SS_res / SS_tot.
+    "Fraction of T's variance explained" (master doc Section 12), computed on
+    the same clamped test predictions as the other metrics.
+    - NOT clamped: a negative R^2 (worse than predicting the mean) is returned
+      as-is, on purpose.
+    - Guarded: if the test targets have zero variance (SS_tot == 0) the value is
+      undefined, so we return 0.0 rather than dividing by zero.
+    """
+    y_true = np.asarray(y_true, float)
+    y_pred = np.asarray(y_pred, float)
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
+    if ss_tot == 0.0:
+        return 0.0
+    return 1.0 - ss_res / ss_tot
 
 # ─────────────────────────────────────────────────────────────────────
 
@@ -97,7 +143,7 @@ def build_mlp(n_layers, neurons):
         activation         = "relu",
         solver             = "adam",
         max_iter           = 2000,
-        random_state       = None,    # intentionally non-deterministic (like PMS GA)
+        random_state       = SEED,    # None → non-deterministic (like PMS GA)
         early_stopping     = True,    # holds back 10% internally for early stop
         n_iter_no_change   = 20,
     )
@@ -127,7 +173,7 @@ def cmaes_search(X_train, y_train):
     """
     # Inner split: 80% for fitting, 20% for CMA-ES fitness
     X_fit, X_val, y_fit, y_val = train_test_split(
-        X_train, y_train, test_size=VAL_RATIO, random_state=None
+        X_train, y_train, test_size=VAL_RATIO, random_state=SEED
     )
 
     def fitness(x):
@@ -151,6 +197,8 @@ def cmaes_search(X_train, y_train):
         "tolx":       1e-4,
         "tolfun":     1e-4,
     }
+    if SEED is not None:
+        opts["seed"] = SEED   # make CMA-ES sampling reproducible when seeded
 
     es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
     while not es.stop():
@@ -171,6 +219,11 @@ def cmaes_search(X_train, y_train):
 
 def run_cmaes_repeated():
 
+    # Seed numpy for reproducibility of the stochastic parts when SEED is set;
+    # otherwise stay non-deterministic like the Octave GA.
+    if SEED is not None:
+        np.random.seed(SEED)
+
     df = pd.read_csv(DATA_FILE, header=None)
     X  = df.iloc[:, :-1].values.astype(float)   # all columns except last = inputs
     y  = df.iloc[:,  -1].values.astype(float)   # last column = target T
@@ -182,6 +235,8 @@ def run_cmaes_repeated():
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     run_results = []
+    all_actuals = []   # true T for every test row, pooled across folds
+    all_preds   = []   # clamped prediction for every test row, pooled across folds
 
     # TRUE k-fold: split the rows into N_FOLDS disjoint folds.  Each fold is
     # the test set exactly once; the other 4 folds are training.  This covers
@@ -224,6 +279,7 @@ def run_cmaes_repeated():
         smape_val = _smape(y_test, preds)
         mae_val   = _mae(y_test, preds)
         rmse_val  = _rmse(y_test, preds)
+        r2_val    = safe_r2(y_test, preds)
         n_test    = len(y_test)
 
         # ── count "bad" cases (|signed%err| > 200%, same threshold as PMS) ─
@@ -234,6 +290,7 @@ def run_cmaes_repeated():
         print(f"  SMAPE  (test, {n_test} rows): {smape_val:.2%}")
         print(f"  MAE    (test, {n_test} rows): {mae_val:.1f} ms")
         print(f"  RMSE   (test, {n_test} rows): {rmse_val:.1f} ms")
+        print(f"  R2     (test, {n_test} rows): {r2_val:.4f}")
         print(f"  Bad cases (|err|>200%)      : {bad_count}")
 
         run_results.append({
@@ -245,11 +302,16 @@ def run_cmaes_repeated():
             "smape":        smape_val,
             "mae":          mae_val,
             "rmse":         rmse_val,
+            "r2":           r2_val,
             "n_test":       n_test,
             "bad_count":    bad_count,
         })
 
-    # ── pooled statistics — identical CI logic to pms_runs.py ─────────
+        # accumulate raw test rows for the POOLED-over-all-rows metrics
+        all_actuals.extend(y_test.tolist())
+        all_preds.extend(preds.tolist())
+
+    # ── per-fold mean ± 95% t-CI — identical CI logic to pms_runs.py ──
     T_CRIT = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776,
               5: 2.571,  7: 2.306, 9: 2.262, 14: 2.145, 19: 2.093}
 
@@ -269,6 +331,17 @@ def run_cmaes_repeated():
     avg_smape, std_smape, ci_smape = _avg_std_ci("smape")
     avg_mae,   std_mae,   ci_mae   = _avg_std_ci("mae")
     avg_rmse,  std_rmse,  ci_rmse  = _avg_std_ci("rmse")
+    avg_r2,    std_r2,    ci_r2    = _avg_std_ci("r2")
+
+    # ── POOLED over all rows (matches pms_kfold's aggregation) ──
+    all_actuals = np.asarray(all_actuals, dtype=float)
+    all_preds   = np.asarray(all_preds,   dtype=float)
+    n_pool      = len(all_actuals)
+    pool_mape   = safe_mape(all_actuals, all_preds)   # already in percent
+    pool_smape  = _smape(all_actuals, all_preds)      # fraction (×100 to show %)
+    pool_mae    = _mae(all_actuals, all_preds)
+    pool_rmse   = _rmse(all_actuals, all_preds)
+    pool_r2     = safe_r2(all_actuals, all_preds)
 
     # ── build log (same format as pms_runs.py) ────────────────────────
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -278,7 +351,7 @@ def run_cmaes_repeated():
         f"arch={r['n_layers']}L×{r['neurons']}N  "
         f"val_MAPE={r['val_mape']:.2f}%  "
         f"MAPE={r['mape']:.2f}%  SMAPE={r['smape']:.2%}  "
-        f"MAE={r['mae']:.1f}ms  RMSE={r['rmse']:.1f}ms  "
+        f"MAE={r['mae']:.1f}ms  RMSE={r['rmse']:.1f}ms  R2={r['r2']:.4f}  "
         f"n={r['n_test']}  bad={r['bad_count']}"
         for r in run_results
     )
@@ -298,9 +371,16 @@ def run_cmaes_repeated():
         f"SEARCH SPACE  : layers [1,5], neurons/layer [1,55], activation=relu\n"
         f"SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)\n"
         f"CMA-ES BUDGET : {CMA_MAX_EVAL} evaluations per fold\n"
-        f"SPLIT         : 5 disjoint folds | per fold: 4 folds train "
-        f"(20% inner val for CMA-ES) / 1 fold test | seed={KFOLD_SEED}\n"
-        f"METRICS       : mean ± 95% t-CI across the {N_FOLDS} fold scores\n"
+        f"SPLIT         : {N_FOLDS} disjoint folds | per fold: train "
+        f"(20% inner val for CMA-ES) / 1 fold test | fold seed={KFOLD_SEED} | "
+        f"stochastic seed={SEED}\n"
+        f"METRICS       : per-fold, mean ± 95% t-CI across folds, AND pooled "
+        f"over all rows (matches pms_kfold) | MAPE in %, SMAPE on 0..200% scale\n"
+        f"CONFOUNDS     : this run used {CMA_MAX_EVAL} evals/fold. At default "
+        f"budgets CMA-ES uses 200 evals/fold vs the GA's 900 — an eval-budget "
+        f"confound when attributing differences to the search paradigm. Also, "
+        f"CMA-ES searches a single uniform width while the GA searches per-layer "
+        f"widths (architecture-space asymmetry)\n"
         f"{'─' * 70}\n"
         f"{run_lines}\n"
         f"{'─' * 70}\n"
@@ -308,6 +388,15 @@ def run_cmaes_repeated():
         f"AVG SMAPE : {_fmt(avg_smape * 100, std_smape * 100, ci_smape * 100, '%')}\n"
         f"AVG MAE   : {_fmt(avg_mae,   std_mae,   ci_mae,   ' ms')}\n"
         f"AVG RMSE  : {_fmt(avg_rmse,  std_rmse,  ci_rmse,  ' ms')}\n"
+        f"AVG R2    : {avg_r2:.4f}  (std ± {std_r2:.4f}  |  95% CI ± {ci_r2:.4f}  "
+        f"→ [{avg_r2 - ci_r2:.4f}, {avg_r2 + ci_r2:.4f}])\n"
+        f"{'─' * 70}\n"
+        f"POOLED over all {n_pool} rows (pms_kfold-style aggregation):\n"
+        f"POOL MAPE : {pool_mape:.2f}%\n"
+        f"POOL SMAPE: {pool_smape * 100:.2f}%\n"
+        f"POOL MAE  : {pool_mae:.1f} ms\n"
+        f"POOL RMSE : {pool_rmse:.1f} ms\n"
+        f"POOL R2   : {pool_r2:.4f}\n"
         f"{'=' * 70}\n"
     )
 

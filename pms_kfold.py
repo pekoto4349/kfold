@@ -58,7 +58,7 @@ def safe_mape(y_true, y_pred):
 
 
     denominator = np.maximum(np.abs(y_true), 1e-8)
-    return np.mean(np.abs(y_true - y_pred) / denominator)
+    return float(np.mean(np.abs(y_true - y_pred) / denominator) * 100)   # percent
 
 
 
@@ -82,6 +82,24 @@ def smape(y_true, y_pred):
 
 def rmse(y_true, y_pred):
     return np.sqrt(mean_squared_error(y_true, y_pred))
+
+
+
+
+def safe_r2(y_true, y_pred):
+    """
+    Coefficient of determination R^2 = 1 - SS_res / SS_tot.
+    Identical formula to ga_mlp_runs.py / cmaes_mlp_runs.py so R2 is comparable
+    across methods. NOT clamped (a negative R2 passes through); guards a
+    zero-variance fold (SS_tot == 0) by returning 0.0 instead of dividing by 0.
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    ss_res = float(np.sum((y_true - y_pred) ** 2))
+    ss_tot = float(np.sum((y_true - np.mean(y_true)) ** 2))
+    if ss_tot == 0.0:
+        return 0.0
+    return 1.0 - ss_res / ss_tot
 
 
 
@@ -376,12 +394,14 @@ def run_pms_kfold():
         external_smape = smape(actuals, predictions)
         external_mae = mean_absolute_error(actuals, predictions)
         external_rmse = rmse(actuals, predictions)
+        external_r2 = safe_r2(actuals, predictions)
 
 
-        print(f"External fold MAPE:  {external_mape:.2%}")
+        print(f"External fold MAPE:  {external_mape:.2f}%")
         print(f"External fold SMAPE: {external_smape:.2%}")
         print(f"External fold MAE:   {external_mae:.6f}")
         print(f"External fold RMSE:  {external_rmse:.6f}")
+        print(f"External fold R2:    {external_r2:.4f}")
 
 
         fold_results.append({
@@ -397,6 +417,7 @@ def run_pms_kfold():
             "external_fold_smape": external_smape,
             "external_fold_mae": external_mae,
             "external_fold_rmse": external_rmse,
+            "external_fold_r2": external_r2,
 
 
             "train_rows": len(train_df),
@@ -433,6 +454,31 @@ def run_pms_kfold():
     final_external_smape = smape(all_actuals, all_predictions)
     final_external_mae = mean_absolute_error(all_actuals, all_predictions)
     final_external_rmse = rmse(all_actuals, all_predictions)
+    final_external_r2 = safe_r2(all_actuals, all_predictions)
+
+
+    # ── mean ± 95% t-CI across the K folds (added: matches ga/cmaes) ──
+    # POOLED (above) aggregates every row into one metric; this block instead
+    # averages the per-fold metrics and adds a t-distribution CI (df = K-1).
+    T_CRIT = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776,
+              5: 2.571,  7: 2.306, 9: 2.262, 14: 2.145, 19: 2.093}
+
+    def _t_crit(n):
+        return T_CRIT.get(n - 1, 1.96)
+
+    def _avg_std_ci(key):
+        vals = [r[key] for r in fold_results]
+        n    = len(vals)
+        avg  = float(np.mean(vals))
+        std  = float(np.std(vals, ddof=1)) if n > 1 else 0.0
+        ci   = _t_crit(n) * std / np.sqrt(n) if n > 1 else 0.0
+        return avg, std, ci
+
+    avg_mape,  std_mape,  ci_mape  = _avg_std_ci("external_fold_mape")
+    avg_smape, std_smape, ci_smape = _avg_std_ci("external_fold_smape")
+    avg_mae,   std_mae,   ci_mae   = _avg_std_ci("external_fold_mae")
+    avg_rmse,  std_rmse,  ci_rmse  = _avg_std_ci("external_fold_rmse")
+    avg_r2,    std_r2,    ci_r2    = _avg_std_ci("external_fold_r2")
 
 
     results_df = pd.DataFrame(fold_results)
@@ -447,13 +493,19 @@ def run_pms_kfold():
 
 
     external_mapes = [
-        f"{r['external_fold_mape']:.2%}"
+        f"{r['external_fold_mape']:.2f}%"
         for r in fold_results
     ]
 
 
     external_smapes = [
         f"{r['external_fold_smape']:.2%}"
+        for r in fold_results
+    ]
+
+
+    external_r2s = [
+        f"{r['external_fold_r2']:.4f}"
         for r in fold_results
     ]
 
@@ -476,13 +528,29 @@ def run_pms_kfold():
         f"LOCAL PMS REPO: {LOCAL_REPO_DIR}\n"
         f"CONFIG: {num_inputs} Inputs -> 1 Target | {K_FOLDS}-Fold CV | {NEURONS_LAYERS}\n"
         f"CLAMP NEGATIVE PREDICTIONS: {CLAMP_NEGATIVE_PREDICTIONS_TO_ZERO}\n"
+        f"METRICS: MAPE in %, SMAPE on 0..200% scale | reported per-fold, POOLED "
+        f"over all rows, AND mean ± 95% t-CI across folds\n"
         f"PMS INTERNAL GRAPH MAPES: {pms_internal_mapes}\n"
-        f"EXTERNAL FOLD MAPES (mean abs % vs actual): {external_mapes}\n"
-        f"EXTERNAL FOLD SMAPEs (symmetric): {external_smapes}\n"
-        f"FINAL EXTERNAL POOLED MAPE:  {final_external_mape:.2%}\n"
+        f"EXTERNAL FOLD MAPES (%): {external_mapes}\n"
+        f"EXTERNAL FOLD SMAPEs (%): {external_smapes}\n"
+        f"EXTERNAL FOLD R2s: {external_r2s}\n"
+        f"{'-' * 80}\n"
+        f"FINAL EXTERNAL POOLED MAPE:  {final_external_mape:.2f}%\n"
         f"FINAL EXTERNAL POOLED SMAPE: {final_external_smape:.2%}\n"
         f"FINAL EXTERNAL POOLED MAE:   {final_external_mae:.6f}\n"
         f"FINAL EXTERNAL POOLED RMSE:  {final_external_rmse:.6f}\n"
+        f"FINAL EXTERNAL POOLED R2:    {final_external_r2:.4f}\n"
+        f"{'-' * 80}\n"
+        f"MEAN ± 95% t-CI ACROSS {K_FOLDS} FOLDS:\n"
+        f"  MAPE : {avg_mape:.2f}% (std ± {std_mape:.2f}% | 95% CI ± {ci_mape:.2f}% "
+        f"→ [{avg_mape - ci_mape:.2f}%, {avg_mape + ci_mape:.2f}%])\n"
+        f"  SMAPE: {avg_smape * 100:.2f}% (std ± {std_smape * 100:.2f}% | 95% CI ± "
+        f"{ci_smape * 100:.2f}% → [{(avg_smape - ci_smape) * 100:.2f}%, "
+        f"{(avg_smape + ci_smape) * 100:.2f}%])\n"
+        f"  MAE  : {avg_mae:.6f} (std ± {std_mae:.6f} | 95% CI ± {ci_mae:.6f})\n"
+        f"  RMSE : {avg_rmse:.6f} (std ± {std_rmse:.6f} | 95% CI ± {ci_rmse:.6f})\n"
+        f"  R2   : {avg_r2:.4f} (std ± {std_r2:.4f} | 95% CI ± {ci_r2:.4f} "
+        f"→ [{avg_r2 - ci_r2:.4f}, {avg_r2 + ci_r2:.4f}])\n"
         f"{'=' * 80}\n"
     )
 
