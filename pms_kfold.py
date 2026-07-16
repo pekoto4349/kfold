@@ -19,7 +19,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 # =====================================================================
 
 
-DATA_FILE = "master_dataset.csv"
+DATA_FILE = "master_dataset_NSMT.csv"
 
 
 BASE_MODELS_DIR = "/home/pekoto/models"
@@ -30,10 +30,10 @@ IMAGE_NAME = "gkousiou/laboctave"
 
 
 K_FOLDS = 5
-NEURONS_LAYERS = "4-45"
+NEURONS_LAYERS = "4-55"
+MODEL = "NSMT"
 
-
-LOG_FILE = f"experiment_logs_{NEURONS_LAYERS}.txt"
+LOG_FILE = f"experiment_logs_{NEURONS_LAYERS}_{MODEL}.txt"
 
 
 # Keep True only if getPrediction.m still removes the first row with (2:end)
