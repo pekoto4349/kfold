@@ -1,0 +1,27 @@
+
+================================================================================
+RUN TIMESTAMP: 2026-07-17 12:19:04
+DATA FILE: master_dataset_NSMBT.csv
+IMAGE: gkousiou/laboctave
+LOCAL PMS REPO: /home/pekoto/repos/PMS-octave
+CONFIG: 4 Inputs -> 1 Target | 5-Fold CV | 4-55
+CLAMP NEGATIVE PREDICTIONS: True
+METRICS: MAPE in %, SMAPE on 0..200% scale | reported per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds
+PMS INTERNAL GRAPH MAPES: ['13.33%', '15.11%', '15.43%', '18.39%', '16.15%']
+EXTERNAL FOLD MAPES (%): ['12.83%', '18.33%', '13.49%', '14.90%', '16.34%']
+EXTERNAL FOLD SMAPEs (%): ['12.24%', '15.27%', '12.84%', '14.18%', '14.02%']
+EXTERNAL FOLD R2s: ['0.9761', '0.9048', '0.9389', '0.4695', '0.8931']
+--------------------------------------------------------------------------------
+FINAL EXTERNAL POOLED MAPE:  15.17%
+FINAL EXTERNAL POOLED SMAPE: 13.71%
+FINAL EXTERNAL POOLED MAE:   3052.060819
+FINAL EXTERNAL POOLED RMSE:  12207.405246
+FINAL EXTERNAL POOLED R2:    0.8288
+--------------------------------------------------------------------------------
+MEAN ± 95% t-CI ACROSS 5 FOLDS:
+  MAPE : 15.17% (std ± 2.22% | 95% CI ± 2.76% → [12.42%, 17.93%])
+  SMAPE: 13.71% (std ± 1.19% | 95% CI ± 1.48% → [12.24%, 15.19%])
+  MAE  : 3052.060819 (std ± 930.142730 | 95% CI ± 1154.739590)
+  RMSE : 10236.639260 (std ± 7435.721174 | 95% CI ± 9231.187149)
+  R2   : 0.8365 (std ± 0.2077 | 95% CI ± 0.2578 → [0.5787, 1.0943])
+================================================================================
