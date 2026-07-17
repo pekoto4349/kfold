@@ -19,7 +19,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 # =====================================================================
 
 
-DATA_FILE = "master_dataset_NSMT.csv"
+DATA_FILE = "master_dataset_NSMW.csv"
 
 
 BASE_MODELS_DIR = "/home/pekoto/models"
@@ -31,7 +31,7 @@ IMAGE_NAME = "gkousiou/laboctave"
 
 K_FOLDS = 5
 NEURONS_LAYERS = "4-55"
-MODEL = "NSMT"
+MODEL = "NSMW"
 
 LOG_FILE = f"experiment_logs_{NEURONS_LAYERS}_{MODEL}.txt"
 
@@ -305,7 +305,7 @@ def run_pms_kfold():
         print("=" * 80)
 
 
-        model_id = f"model_Dynamic_Fold{fold_index}_{NEURONS_LAYERS}"
+        model_id = f"model_Dynamic_Fold{fold_index}_{NEURONS_LAYERS}_{MODEL}"
         timestamp = f"FOLD{fold_index}"
         model_dir = os.path.join(BASE_MODELS_DIR, model_id)
 
@@ -488,7 +488,7 @@ def run_pms_kfold():
     os.makedirs(result_dir, exist_ok=True)
 
 
-    metrics_path = os.path.join(result_dir, f"kfold_metrics_{NEURONS_LAYERS}.csv")
+    metrics_path = os.path.join(result_dir, f"kfold_metrics_{NEURONS_LAYERS}_{MODEL}.csv")
     results_df.to_csv(metrics_path, index=False)
 
 
