@@ -19,7 +19,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 # =====================================================================
 
 
-DATA_FILE = "master_dataset_NSMW.csv"
+DATA_FILE = "master_dataset_NSMDhatT.csv"
 
 
 BASE_MODELS_DIR = "/home/pekoto/models"
@@ -31,7 +31,7 @@ IMAGE_NAME = "gkousiou/laboctave"
 
 K_FOLDS = 5
 NEURONS_LAYERS = "4-55"
-MODEL = "NSMW"
+MODEL = "NSMDhatT"
 
 LOG_FILE = f"experiment_logs_{NEURONS_LAYERS}_{MODEL}.txt"
 

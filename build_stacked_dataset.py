@@ -4,16 +4,16 @@ import numpy as np
 import pandas as pd
 
 # ── CONFIG ───────────────────────────────────────────────────────────
-BASE_MODELS_DIR   = "/home/pekoto/models"
+BASE_MODELS_DIR   = "/home/pekoto/from_old_pc/models"
 
 # Tag used in Run 1 (the SNM → W kfold run)
-W_MODEL_TAG       = "SNM-W-5-45"
+W_MODEL_TAG       = "4-55_NSMD"
 
 # Original full dataset: columns S, N, M, T  (used to recover T)
-MASTER_DATASET    = "master_dataset.csv"
+MASTER_DATASET    = "/home/pekoto/from_old_pc/repos/kfold/master_dataset_NSMT.csv"
 
 # Output file that will be used as DATA_FILE in Run 2
-OUTPUT_FILE       = "snmwhat_t.csv"
+OUTPUT_FILE       = "/home/pekoto/from_old_pc/repos/kfold/master_dataset_NSMDhatT.csv"
 # ─────────────────────────────────────────────────────────────────────
 
 
