@@ -66,13 +66,22 @@ MUTPB    = 0.2       # mutation probability  (Octave default ~0.2)
 INDPB    = 0.2       # per-gene mutation probability when an individual mutates
 TOURNSIZE = 3        # tournament selection size (Octave uses tournament selection)
 
-# Architecture search space (UNCHANGED — the neuron/layer bounds are managed
-# separately). Chromosome = [n_layers, n1, n2, n3, n4, n5]:
-#   gene 0     : number of hidden layers, in [1, 5]
-#   genes 1..5 : neurons for each layer,  in [1, 55]
+# Architecture search space. Chromosome = [n_layers, n1..n{NLmax}, activation]:
+#   gene 0            : number of hidden layers, in [3, 4]  (matches Octave NLmax)
+#   genes 1..NLmax    : neurons for each layer,  in [1, 55]
+#   last gene         : activation index (see ACTIVATIONS below)
 # Only the first n_layers neuron genes are used to build the network.
-N_LAYERS_MIN, N_LAYERS_MAX = 1, 5
+N_LAYERS_MIN, N_LAYERS_MAX = 3, 4
 NEURONS_MIN,  NEURONS_MAX  = 1, 55
+
+# Activation is now SEARCHED too, like Octave (whose GA evolves the transfer
+# function). scikit-learn applies ONE activation to all hidden layers, so the
+# search picks a single network-wide activation from these analogues of
+# Octave's set:
+#   "tanh"     ~ tansig       "logistic" ~ logsig
+#   "identity" ~ purelin      "relu"     (bonus; Octave has no relu)
+ACTIVATIONS = ["tanh", "logistic", "relu", "identity"]
+ACT_MIN, ACT_MAX = 0, len(ACTIVATIONS) - 1
 
 MAPE_GATE = 20.0     # Octave's medval save-gate (nnscript.m: <0.20)
 
@@ -155,13 +164,14 @@ def octave_split(X, y, seed):
 # 'trainlm') as closely as scikit-learn allows:
 #   solver     = "lbfgs"  -> quasi-Newton, the closest sklearn analogue to LM,
 #                            and the recommended solver for small datasets.
-#   activation = "tanh"   -> matches Octave's tansig/logsig transfer family.
+#   activation -> SEARCHED (one of ACTIVATIONS), matching Octave's evolved
+#                 tansig/logsig/purelin transfer functions (+ relu).
 # early_stopping is intentionally OFF (Octave has none; lbfgs ignores it).
 
-def build_mlp(hidden_layer_sizes):
+def build_mlp(hidden_layer_sizes, activation):
     net = MLPRegressor(
         hidden_layer_sizes = hidden_layer_sizes,
-        activation         = "tanh",
+        activation         = activation,
         solver             = "lbfgs",
         max_iter           = 2000,
         random_state       = SEED,   # None -> non-deterministic, like the Octave GA
@@ -190,16 +200,18 @@ if not hasattr(creator, "Individual"):
 def make_individual():
     """Create one random chromosome within the architecture bounds."""
     genes = [random.randint(N_LAYERS_MIN, N_LAYERS_MAX)]          # gene 0 = layer count
-    genes += [random.randint(NEURONS_MIN, NEURONS_MAX)           # genes 1..5 = widths
+    genes += [random.randint(NEURONS_MIN, NEURONS_MAX)           # genes 1..NLmax = widths
               for _ in range(N_LAYERS_MAX)]
+    genes += [random.randint(ACT_MIN, ACT_MAX)]                  # last gene = activation
     return creator.Individual(genes)
 
 
-def genes_to_hidden(individual):
-    """Decode a chromosome into the hidden-layer-sizes tuple actually used."""
-    n_layers = int(individual[0])
-    widths   = [int(individual[1 + i]) for i in range(n_layers)]
-    return n_layers, widths
+def genes_to_arch(individual):
+    """Decode a chromosome into (n_layers, widths, activation)."""
+    n_layers   = int(individual[0])
+    widths     = [int(individual[1 + i]) for i in range(n_layers)]
+    activation = ACTIVATIONS[int(individual[1 + N_LAYERS_MAX])]
+    return n_layers, widths, activation
 
 # ─────────────────────────────────────────────────────────────────────
 
@@ -212,18 +224,18 @@ def ga_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
       - fitness of each candidate = TRAINING MSE on `train`  (nnscript.m: perf=thismse)
       - a candidate is SAVED only if its medval MAPE < MAPE_GATE  (nnscript.m: <0.20)
       - after the GA, the best SAVED candidate is SELECTED on `val`  (createmodel.m)
-    Returns (best_model, best_arch, n_layers, num_saved).
-    best_model is the trained model; best_arch is the list of layer widths.
+    Returns (best_model, best_widths, n_layers, best_activation, num_saved).
+    best_model is the trained model; best_widths is the list of layer widths.
     """
     # `saved` holds every candidate that passed the medval gate, as Octave does
     # by archiving nets into bestnets/. `fallback` keeps the single best-by-medval
     # candidate so a run never ends with nothing (Octave would simply save none).
-    saved    = []                       # list of (model, medval_mape, widths)
-    fallback = {"model": None, "medval": float("inf"), "widths": None}
+    saved    = []                       # list of (model, medval_mape, widths, activation)
+    fallback = {"model": None, "medval": float("inf"), "widths": None, "act": None}
 
     def evaluate(individual):
-        n_layers, widths = genes_to_hidden(individual)
-        model = build_mlp(tuple(widths))
+        n_layers, widths, activation = genes_to_arch(individual)
+        model = build_mlp(tuple(widths), activation)
         try:
             model.fit(X_train, y_train)
             train_pred = model.predict(X_train)
@@ -233,16 +245,19 @@ def ga_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
         except Exception:
             return (1e18,)              # penalise failed fits
         if med_mape < MAPE_GATE:        # Octave save-gate
-            saved.append((model, med_mape, widths))
+            saved.append((model, med_mape, widths, activation))
         if med_mape < fallback["medval"]:
-            fallback["model"], fallback["medval"], fallback["widths"] = model, med_mape, widths
+            fallback["model"]  = model
+            fallback["medval"] = med_mape
+            fallback["widths"] = widths
+            fallback["act"]    = activation
         return (train_mse,)
 
     toolbox = base.Toolbox()
     toolbox.register("individual", make_individual)
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    low = [N_LAYERS_MIN] + [NEURONS_MIN] * N_LAYERS_MAX
-    up  = [N_LAYERS_MAX] + [NEURONS_MAX] * N_LAYERS_MAX
+    low = [N_LAYERS_MIN] + [NEURONS_MIN] * N_LAYERS_MAX + [ACT_MIN]
+    up  = [N_LAYERS_MAX] + [NEURONS_MAX] * N_LAYERS_MAX + [ACT_MAX]
     toolbox.register("evaluate", evaluate)
     toolbox.register("mate",     tools.cxTwoPoint)
     toolbox.register("mutate",   tools.mutUniformInt, low=low, up=up, indpb=INDPB)
@@ -282,17 +297,17 @@ def ga_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
 
     # ── model selection on `val` among SAVED candidates ───────────────
     pool = saved if saved else (
-        [(fallback["model"], fallback["medval"], fallback["widths"])]
+        [(fallback["model"], fallback["medval"], fallback["widths"], fallback["act"])]
         if fallback["model"] is not None else []
     )
     if not pool:
-        return None, None, 0, 0
+        return None, None, 0, None, 0
 
     def val_mape_of(entry):
         return safe_mape(y_val, entry[0].predict(X_val))
 
-    best_model, _, best_widths = min(pool, key=val_mape_of)
-    return best_model, best_widths, len(best_widths), len(saved)
+    best_model, _, best_widths, best_act = min(pool, key=val_mape_of)
+    return best_model, best_widths, len(best_widths), best_act, len(saved)
 
 # ─────────────────────────────────────────────────────────────────────
 
@@ -329,7 +344,7 @@ def run_ga_repeated():
          X_val, y_val, X_final, y_final) = octave_split(X, y, SEED)
 
         print("  [GA] Evolving architecture (fitness = training MSE)...")
-        best_model, best_widths, n_layers, num_saved = ga_search(
+        best_model, best_widths, n_layers, best_act, num_saved = ga_search(
             X_train, y_train, X_medval, y_medval, X_val, y_val
         )
 
@@ -338,7 +353,7 @@ def run_ga_repeated():
             continue
 
         print(f"  Best architecture (selected on val): "
-              f"{n_layers} layers, widths {best_widths}")
+              f"{n_layers} layers, widths {best_widths}, act={best_act}")
         print(f"  Candidates saved (medval MAPE < {MAPE_GATE:.0f}%): {num_saved}")
 
         # ── evaluate the selected model on finalval (the ONE reported MAPE) ─
@@ -366,6 +381,7 @@ def run_ga_repeated():
             "run":        run_idx,
             "n_layers":   n_layers,
             "widths":     "-".join(str(w) for w in best_widths),
+            "activation": best_act,
             "candidates": num_saved,
             "mape":       mape_val,
             "smape":      smape_val,
@@ -406,7 +422,7 @@ def run_ga_repeated():
 
     run_lines = "\n".join(
         f"  Run {r['run']}: "
-        f"arch={r['n_layers']}L[{r['widths']}]  "
+        f"arch={r['n_layers']}L[{r['widths']}] act={r['activation']}  "
         f"MAPE={r['mape']:.2f}%  SMAPE={r['smape']:.2%}  "
         f"MAE={r['mae']:.1f}ms  RMSE={r['rmse']:.1f}ms  R2={r['r2']:.4f}  "
         f"n={r['n_final']}  candidates={r['candidates']}  bad={r['bad_count']}"
@@ -427,7 +443,8 @@ def run_ga_repeated():
         f"CONFIG        : {num_inputs} inputs -> 1 target | "
         f"{NUM_RUNS} repeated runs | tag: {MODEL_TAG}\n"
         f"SEARCH SPACE  : layers [{N_LAYERS_MIN},{N_LAYERS_MAX}], "
-        f"neurons/layer [{NEURONS_MIN},{NEURONS_MAX}]\n"
+        f"neurons/layer [{NEURONS_MIN},{NEURONS_MAX}], "
+        f"activation in {ACTIVATIONS}\n"
         f"SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)\n"
         f"GA SETTINGS   : pop={POP_SIZE} x gen={N_GEN} = {POP_SIZE * N_GEN} evals | "
         f"cxpb={CXPB} mutpb={MUTPB} tournsize={TOURNSIZE} | fitness=training MSE\n"

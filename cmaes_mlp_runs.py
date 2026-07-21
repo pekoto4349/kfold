@@ -56,14 +56,22 @@ MEDVAL_RATIO_OF_80 = 0.20   # createmodel.m: subset(trainver2,...,0.2)
 # Set PMS_SEED=<int> to make a full run reproducible (all runs become identical).
 SEED = _env_seed("PMS_SEED", None)
 
-# Architecture search space (UNCHANGED — the neuron/layer bounds are managed
-# separately). CMA-ES searches TWO continuous variables in [0, 1]:
-#   x[0] -> number of hidden layers : decoded as round(1 + x[0] * 4)  -> 1..5
-#   x[1] -> neurons per layer       : decoded as round(1 + x[1] * 54) -> 1..55
+# Architecture search space. CMA-ES searches THREE continuous variables in [0, 1]:
+#   x[0] -> number of hidden layers : decoded to [3, 4]  (matches Octave NLmax)
+#   x[1] -> neurons per layer       : decoded to [1, 55]
+#   x[2] -> activation              : decoded to an index into ACTIVATIONS
 # All layers share the same neuron count (simplification vs the GA's per-layer
-# encoding). Activation fixed to tanh (matches Octave tansig/logsig).
-N_LAYERS_MIN, N_LAYERS_MAX = 1, 5
+# encoding).
+N_LAYERS_MIN, N_LAYERS_MAX = 3, 4
 NEURONS_MIN,  NEURONS_MAX  = 1, 55
+
+# Activation is now SEARCHED too, like Octave (whose GA evolves the transfer
+# function). scikit-learn applies ONE activation to all hidden layers, so the
+# search picks a single network-wide activation from these analogues of
+# Octave's set:
+#   "tanh"     ~ tansig       "logistic" ~ logsig
+#   "identity" ~ purelin      "relu"     (bonus; Octave has no relu)
+ACTIVATIONS = ["tanh", "logistic", "relu", "identity"]
 
 CMA_MAX_EVAL = _env_int("PMS_MAXEVAL", 200)
                      # CMA-ES evaluation budget per run. PMS uses 900, but
@@ -141,25 +149,28 @@ def octave_split(X, y, seed):
 # CMA-ES works in continuous space; decode its output to valid integers.
 
 def decode_architecture(x):
-    """x is a 2-element vector in ~[0, 1]. Returns (n_layers, neurons_per_layer)."""
-    n_layers = int(np.clip(round(1 + float(x[0]) * (N_LAYERS_MAX - 1)),
+    """x is a 3-element vector in ~[0, 1]. Returns (n_layers, neurons, activation)."""
+    n_layers = int(np.clip(round(N_LAYERS_MIN + float(x[0]) * (N_LAYERS_MAX - N_LAYERS_MIN)),
                            N_LAYERS_MIN, N_LAYERS_MAX))
-    neurons  = int(np.clip(round(1 + float(x[1]) * (NEURONS_MAX - 1)),
+    neurons  = int(np.clip(round(NEURONS_MIN + float(x[1]) * (NEURONS_MAX - NEURONS_MIN)),
                            NEURONS_MIN, NEURONS_MAX))
-    return n_layers, neurons
+    act_idx  = int(np.clip(round(float(x[2]) * (len(ACTIVATIONS) - 1)),
+                           0, len(ACTIVATIONS) - 1))
+    return n_layers, neurons, ACTIVATIONS[act_idx]
 
 # Octave PMS normalizes every input AND the target to [-1, 1] via normalize.m;
 # reproduced with MinMaxScaler([-1, 1]) on inputs (pipeline) and target
 # (TransformedTargetRegressor). The trainer matches Octave's Levenberg-Marquardt
 # (net.trainFcn='trainlm') as closely as sklearn allows:
 #   solver="lbfgs"  -> quasi-Newton, the closest sklearn analogue to LM.
-#   activation="tanh" -> matches Octave's tansig/logsig family.
+#   activation      -> SEARCHED (one of ACTIVATIONS), matching Octave's evolved
+#                      tansig/logsig/purelin transfer functions (+ relu).
 # early_stopping is intentionally OFF (Octave has none; lbfgs ignores it).
 
-def build_mlp(n_layers, neurons):
+def build_mlp(n_layers, neurons, activation):
     net = MLPRegressor(
         hidden_layer_sizes = (neurons,) * n_layers,
-        activation         = "tanh",
+        activation         = activation,
         solver             = "lbfgs",
         max_iter           = 2000,
         random_state       = SEED,   # None -> non-deterministic, like the Octave GA
@@ -185,14 +196,15 @@ def cmaes_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
       - objective minimised by CMA-ES = TRAINING MSE on `train` (nnscript.m: perf=thismse)
       - a candidate is SAVED only if its medval MAPE < MAPE_GATE (nnscript.m: <0.20)
       - after search, the best SAVED candidate is SELECTED on `val` (createmodel.m)
-    Returns (best_model, best_n_layers, best_neurons, num_saved).
+    Returns (best_model, best_n_layers, best_neurons, best_activation, num_saved).
     """
-    saved    = []                       # list of (model, medval_mape, n_layers, neurons)
-    fallback = {"model": None, "medval": float("inf"), "n_layers": None, "neurons": None}
+    saved    = []                       # list of (model, medval_mape, n_layers, neurons, act)
+    fallback = {"model": None, "medval": float("inf"), "n_layers": None,
+                "neurons": None, "act": None}
 
     def objective(x):
-        n_layers, neurons = decode_architecture(x)
-        model = build_mlp(n_layers, neurons)
+        n_layers, neurons, activation = decode_architecture(x)
+        model = build_mlp(n_layers, neurons, activation)
         try:
             model.fit(X_train, y_train)
             train_pred = model.predict(X_train)
@@ -202,20 +214,21 @@ def cmaes_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
         except Exception:
             return 1e18                 # penalise failed fits
         if med_mape < MAPE_GATE:        # Octave save-gate
-            saved.append((model, med_mape, n_layers, neurons))
+            saved.append((model, med_mape, n_layers, neurons, activation))
         if med_mape < fallback["medval"]:
             fallback["model"]    = model
             fallback["medval"]   = med_mape
             fallback["n_layers"] = n_layers
             fallback["neurons"]  = neurons
+            fallback["act"]      = activation
         return train_mse
 
-    x0     = [0.5, 0.5]     # start at 3 layers, ~28 neurons
-    sigma0 = 0.3            # initial step size in normalised [0,1] space
+    x0     = [0.5, 0.5, 0.5]   # mid layers, mid neurons, mid activation
+    sigma0 = 0.3               # initial step size in normalised [0,1] space
 
     opts = {
         "maxfevals":  CMA_MAX_EVAL,
-        "bounds":     [[0.0, 0.0], [1.0, 1.0]],
+        "bounds":     [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
         "verbose":    -9,   # silent
         "tolx":       1e-4,
         "tolfun":     1e-4,
@@ -231,17 +244,18 @@ def cmaes_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
 
     # ── model selection on `val` among SAVED candidates ───────────────
     pool = saved if saved else (
-        [(fallback["model"], fallback["medval"], fallback["n_layers"], fallback["neurons"])]
+        [(fallback["model"], fallback["medval"], fallback["n_layers"],
+          fallback["neurons"], fallback["act"])]
         if fallback["model"] is not None else []
     )
     if not pool:
-        return None, 0, 0, 0
+        return None, 0, 0, None, 0
 
     def val_mape_of(entry):
         return safe_mape(y_val, entry[0].predict(X_val))
 
-    best_model, _, best_layers, best_neurons = min(pool, key=val_mape_of)
-    return best_model, best_layers, best_neurons, len(saved)
+    best_model, _, best_layers, best_neurons, best_act = min(pool, key=val_mape_of)
+    return best_model, best_layers, best_neurons, best_act, len(saved)
 
 # ─────────────────────────────────────────────────────────────────────
 
@@ -276,7 +290,7 @@ def run_cmaes_repeated():
          X_val, y_val, X_final, y_final) = octave_split(X, y, SEED)
 
         print("  [CMA-ES] Searching architecture (objective = training MSE)...")
-        best_model, best_layers, best_neurons, num_saved = cmaes_search(
+        best_model, best_layers, best_neurons, best_act, num_saved = cmaes_search(
             X_train, y_train, X_medval, y_medval, X_val, y_val
         )
 
@@ -285,7 +299,7 @@ def run_cmaes_repeated():
             continue
 
         print(f"  Best architecture (selected on val): "
-              f"{best_layers} layers × {best_neurons} neurons")
+              f"{best_layers} layers × {best_neurons} neurons, act={best_act}")
         print(f"  Candidates saved (medval MAPE < {MAPE_GATE:.0f}%): {num_saved}")
 
         # ── evaluate the selected model on finalval (the ONE reported MAPE) ─
@@ -313,6 +327,7 @@ def run_cmaes_repeated():
             "run":        run_idx,
             "n_layers":   best_layers,
             "neurons":    best_neurons,
+            "activation": best_act,
             "candidates": num_saved,
             "mape":       mape_val,
             "smape":      smape_val,
@@ -353,7 +368,7 @@ def run_cmaes_repeated():
 
     run_lines = "\n".join(
         f"  Run {r['run']}: "
-        f"arch={r['n_layers']}L×{r['neurons']}N  "
+        f"arch={r['n_layers']}L×{r['neurons']}N act={r['activation']}  "
         f"MAPE={r['mape']:.2f}%  SMAPE={r['smape']:.2%}  "
         f"MAE={r['mae']:.1f}ms  RMSE={r['rmse']:.1f}ms  R2={r['r2']:.4f}  "
         f"n={r['n_final']}  candidates={r['candidates']}  bad={r['bad_count']}"
@@ -374,7 +389,8 @@ def run_cmaes_repeated():
         f"CONFIG        : {num_inputs} inputs -> 1 target | "
         f"{NUM_RUNS} repeated runs | tag: {MODEL_TAG}\n"
         f"SEARCH SPACE  : layers [{N_LAYERS_MIN},{N_LAYERS_MAX}], "
-        f"neurons/layer [{NEURONS_MIN},{NEURONS_MAX}]\n"
+        f"neurons/layer [{NEURONS_MIN},{NEURONS_MAX}], "
+        f"activation in {ACTIVATIONS}\n"
         f"SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)\n"
         f"CMA-ES BUDGET : {CMA_MAX_EVAL} evaluations per run | objective=training MSE\n"
         f"PROTOCOL      : Octave-faithful single split per run — finalval 20%, "
