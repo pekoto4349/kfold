@@ -1,0 +1,35 @@
+
+======================================================================
+RUN TIMESTAMP : 2026-07-21 17:02:03
+DATA FILE     : master_dataset_NSMT.csv
+MODEL         : Genetic Algorithm (DEAP) + MLPRegressor (sklearn)
+TRAINER       : solver=lbfgs, activation=SEARCHED (matches Octave trainlm)
+CONFIG        : 3 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMT
+SEARCH SPACE  : layers [3,4], neurons/layer [1,55], activation in ['tanh', 'logistic', 'relu', 'identity']
+SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)
+GA SETTINGS   : pop=30 x gen=30 = 900 evals | cxpb=0.8 mutpb=0.2 tournsize=3 | fitness=training MSE
+PROTOCOL      : k-fold like pms_kfold.py — ONE Octave-style 80-20 per fold, repeated 5x, every row held out exactly once. The 80% is split into train (fits candidates) / medval (gate <20%) / val (selects best net). NO nested finalval; the held-out 20% is the reported MAPE (= Octave finalval / bottom-right graph MAPE).
+SEED          : None
+METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds | MAPE in %, SMAPE on 0..200% scale
+──────────────────────────────────────────────────────────────────────
+  Fold 1: arch=3L[36-17-50] act=relu  MAPE=18.26%  SMAPE=16.32%  MAE=2683.0ms  RMSE=6949.0ms  R2=0.9622  n=126  candidates=536  bad=1
+  Fold 2: arch=4L[47-52-32-10] act=relu  MAPE=20.23%  SMAPE=15.87%  MAE=2189.4ms  RMSE=3993.6ms  R2=0.9670  n=126  candidates=86  bad=2
+  Fold 3: arch=4L[16-41-30-39] act=relu  MAPE=14.48%  SMAPE=14.11%  MAE=1878.5ms  RMSE=4180.5ms  R2=0.9532  n=126  candidates=214  bad=1
+  Fold 4: arch=4L[52-44-21-17] act=relu  MAPE=12.50%  SMAPE=12.84%  MAE=2828.5ms  RMSE=10856.5ms  R2=0.8789  n=126  candidates=200  bad=0
+  Fold 5: arch=3L[47-21-30] act=relu  MAPE=22.48%  SMAPE=13.63%  MAE=3238.8ms  RMSE=10715.0ms  R2=0.9052  n=126  candidates=350  bad=1
+──────────────────────────────────────────────────────────────────────
+CANDIDATE COUNTS : [536, 86, 214, 200, 350]
+POOLED over all 630 rows:
+  POOL MAPE : 17.59%
+  POOL SMAPE: 14.55%
+  POOL MAE  : 2563.6 ms
+  POOL RMSE : 7929.6 ms
+  POOL R2   : 0.9278
+──────────────────────────────────────────────────────────────────────
+MEAN ± 95% t-CI ACROSS 5 FOLDS:
+AVG MAPE  : 17.59%  (std ± 4.09%  |  95% CI ± 5.08%  → [12.51%, 22.67%])
+AVG SMAPE : 14.55%  (std ± 1.49%  |  95% CI ± 1.84%  → [12.71%, 16.40%])
+AVG MAE   : 2563.65 ms  (std ± 536.14 ms  |  95% CI ± 665.59 ms  → [1898.06 ms, 3229.24 ms])
+AVG RMSE  : 7338.92 ms  (std ± 3357.47 ms  |  95% CI ± 4168.18 ms  → [3170.74 ms, 11507.10 ms])
+AVG R2    : 0.9333  (std ± 0.0391  |  95% CI ± 0.0485  → [0.8848, 0.9818])
+======================================================================
