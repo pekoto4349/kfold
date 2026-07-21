@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import cma
 from sklearn.neural_network import MLPRegressor
-from sklearn.model_selection import train_test_split, KFold
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.compose import TransformedTargetRegressor
@@ -13,7 +13,7 @@ from sklearn.compose import TransformedTargetRegressor
 # ── ENV OVERRIDES (optional) ─────────────────────────────────────────
 # Small helpers so a fast SMOKE RUN is possible without editing this file.
 # Every override defaults to the value baked in below, so leaving the env
-# vars unset reproduces the original behavior exactly.
+# vars unset reproduces the default behavior exactly.
 def _env_int(name, default):
     val = os.environ.get(name)
     if val is None or val.strip() == "":
@@ -24,7 +24,7 @@ def _env_int(name, default):
         return default
 
 def _env_seed(name, default):
-    """Return None (stochastic) unless PMS_SEED is set to an integer."""
+    """Return None (stochastic) unless the env var is set to an integer."""
     return _env_int(name, default)
 
 # ── CONFIG ───────────────────────────────────────────────────────────
@@ -32,43 +32,51 @@ DATA_FILE  = "master_dataset.csv"   # swap this to run calibration variants
 RESULTS_DIR = "cmaes_results"
 MODEL_TAG  = "NSMT"                 # label for this run  e.g. NSMT, NSMKT, etc.
 
-N_FOLDS     = _env_int("PMS_FOLDS", 5)
-                     # TRUE k-fold cross-validation (KFOLD=5), like pms_kfold.py.
-                     # The 630 rows are cut into 5 disjoint folds; each fold is
-                     # the test set exactly once, so every row is tested once.
-                     # (Overridable via PMS_FOLDS for a fast smoke run.)
-KFOLD_SEED  = 42     # fixed seed → reproducible folds (matches pms_kfold.py)
-VAL_RATIO   = 0.20   # 20% of the 4 training folds used as CMA-ES fitness
-                     # signal (= PMS medval).  This is the inner model-selection
-                     # split, nested inside each outer fold.
+# Repeated INDEPENDENT runs (NOT k-fold), exactly like pms_runs.py: each run
+# does one fresh Octave-style split and reports ONE finalval MAPE, then we
+# aggregate mean ± 95% CI across runs.
+NUM_RUNS = _env_int("PMS_RUNS", _env_int("PMS_FOLDS", 5))
 
-# Reproducibility seed for the STOCHASTIC parts (inner val split, MLP training,
-# and CMA-ES sampling).  Default None → non-deterministic, like the Octave GA.
-# Set PMS_SEED=<int> to make a full run reproducible.
-SEED        = _env_seed("PMS_SEED", None)
+# ── OCTAVE-FAITHFUL SPLIT (createmodel.m lines 49 + 57) ───────────────
+# Octave PMS splits the data ONCE into four disjoint sets:
+#   finalval  = 20% of ALL data        -> the single reported MAPE (never seen)
+#   train / medval / val  from the 80% -> ~50% / ~20% / ~30% of that 80%
+# and each set has a distinct job (there is NO "inner/outer" k-fold here):
+#   train  -> the network is actually trained on this
+#   medval -> SAVE GATE: keep a candidate only if its medval MAPE < 20%
+#   val    -> SELECT the best saved candidate on this
+#   finalval -> report one MAPE on this held-out set
+FINALVAL_RATIO     = 0.20   # createmodel.m: subset(trainver1,1,1,0.2)
+VAL_RATIO_OF_80    = 0.30   # createmodel.m: subset(trainver2,...,0.3)
+MEDVAL_RATIO_OF_80 = 0.20   # createmodel.m: subset(trainver2,...,0.2)
+# train = the remaining ~0.50 of the 80%.
 
-# Architecture search space — same ceiling as PMS best (NLmax=5, NperLmax=55)
-# CMA-ES searches TWO continuous variables in [0, 1]:
-#   x[0] → number of hidden layers : decoded as round(1 + x[0] * 4)  → 1..5
-#   x[1] → neurons per layer       : decoded as round(1 + x[1] * 54) → 1..55
-# All layers share the same neuron count (simplification vs PMS per-layer encoding).
-# Activation fixed to 'relu' (standard Python equivalent of PMS tansig/logsig mix).
+# Reproducibility seed for the STOCHASTIC parts (the split, MLP init, and
+# CMA-ES sampling). Default None -> non-deterministic, like the Octave GA.
+# Set PMS_SEED=<int> to make a full run reproducible (all runs become identical).
+SEED = _env_seed("PMS_SEED", None)
+
+# Architecture search space (UNCHANGED — the neuron/layer bounds are managed
+# separately). CMA-ES searches TWO continuous variables in [0, 1]:
+#   x[0] -> number of hidden layers : decoded as round(1 + x[0] * 4)  -> 1..5
+#   x[1] -> neurons per layer       : decoded as round(1 + x[1] * 54) -> 1..55
+# All layers share the same neuron count (simplification vs the GA's per-layer
+# encoding). Activation fixed to tanh (matches Octave tansig/logsig).
+N_LAYERS_MIN, N_LAYERS_MAX = 1, 5
+NEURONS_MIN,  NEURONS_MAX  = 1, 55
 
 CMA_MAX_EVAL = _env_int("PMS_MAXEVAL", 200)
-                     # CMA-ES evaluation budget per run.
-                     # PMS uses pop=30 × gen=30 = 900 evals, but CMA-ES is
-                     # more sample-efficient — 200 is sufficient for 2D search.
-                     # (Overridable via PMS_MAXEVAL for a fast smoke run.)
+                     # CMA-ES evaluation budget per run. PMS uses 900, but
+                     # CMA-ES is more sample-efficient — 200 suffices for a 2D
+                     # search. (Overridable via PMS_MAXEVAL for a fast smoke run.)
 
-# Stopping threshold: same concept as PMS "medval MAPE < 20% gate"
-# If the best MAPE found by CMA-ES never drops below this, note it in the log.
-MAPE_GATE = 20.0     # percent
+MAPE_GATE = 20.0     # Octave's medval save-gate (nnscript.m: <0.20)
 
 LOG_FILE = f"experiment_logs_{MODEL_TAG}_cmaes.txt"
 # ─────────────────────────────────────────────────────────────────────
 
 
-# ── METRICS  (identical to pms_runs.py) ──────────────────────────────
+# ── METRICS  (identical to pms_runs.py / ga_mlp_runs.py) ─────────────
 
 def safe_mape(y_true, y_pred):
     """MAPE with a small floor on the denominator to avoid div-by-zero."""
@@ -93,15 +101,7 @@ def _rmse(a, p):
     return float(np.sqrt(np.mean((np.asarray(a, float) - np.asarray(p, float)) ** 2)))
 
 def safe_r2(y_true, y_pred):
-    """
-    Coefficient of determination R^2 = 1 - SS_res / SS_tot.
-    "Fraction of T's variance explained" (master doc Section 12), computed on
-    the same clamped test predictions as the other metrics.
-    - NOT clamped: a negative R^2 (worse than predicting the mean) is returned
-      as-is, on purpose.
-    - Guarded: if the test targets have zero variance (SS_tot == 0) the value is
-      undefined, so we return 0.0 rather than dividing by zero.
-    """
+    """Coefficient of determination R^2 = 1 - SS_res / SS_tot."""
     y_true = np.asarray(y_true, float)
     y_pred = np.asarray(y_pred, float)
     ss_res = float(np.sum((y_true - y_pred) ** 2))
@@ -113,39 +113,56 @@ def safe_r2(y_true, y_pred):
 # ─────────────────────────────────────────────────────────────────────
 
 
-# ── ARCHITECTURE DECODE ───────────────────────────────────────────────
-# CMA-ES works in continuous space.  We decode its output to valid integers.
+# ── OCTAVE-FAITHFUL 4-WAY SPLIT ───────────────────────────────────────
+
+def octave_split(X, y, seed):
+    """
+    Reproduce createmodel.m's split:
+      finalval = 20% of all
+      then split the 80% into train (~50%) / medval (~20%) / val (~30%).
+    Returns X_train, y_train, X_medval, y_medval, X_val, y_val, X_final, y_final.
+    """
+    X_tv, X_final, y_tv, y_final = train_test_split(
+        X, y, test_size=FINALVAL_RATIO, random_state=seed
+    )
+    X_tm, X_val, y_tm, y_val = train_test_split(
+        X_tv, y_tv, test_size=VAL_RATIO_OF_80, random_state=seed
+    )
+    medval_frac_of_rest = MEDVAL_RATIO_OF_80 / (1.0 - VAL_RATIO_OF_80)
+    X_train, X_medval, y_train, y_medval = train_test_split(
+        X_tm, y_tm, test_size=medval_frac_of_rest, random_state=seed
+    )
+    return X_train, y_train, X_medval, y_medval, X_val, y_val, X_final, y_final
+
+# ─────────────────────────────────────────────────────────────────────
+
+
+# ── ARCHITECTURE DECODE / BUILD ───────────────────────────────────────
+# CMA-ES works in continuous space; decode its output to valid integers.
 
 def decode_architecture(x):
-    """
-    x is a 2-element list from CMA-ES, each in roughly [0, 1].
-    Returns (n_layers, neurons_per_layer) as integers.
-    """
-    n_layers = int(np.clip(round(1 + float(x[0]) * 4), 1, 5))
-    neurons  = int(np.clip(round(1 + float(x[1]) * 54), 1, 55))
+    """x is a 2-element vector in ~[0, 1]. Returns (n_layers, neurons_per_layer)."""
+    n_layers = int(np.clip(round(1 + float(x[0]) * (N_LAYERS_MAX - 1)),
+                           N_LAYERS_MIN, N_LAYERS_MAX))
+    neurons  = int(np.clip(round(1 + float(x[1]) * (NEURONS_MAX - 1)),
+                           NEURONS_MIN, NEURONS_MAX))
     return n_layers, neurons
 
-def build_mlp(n_layers, neurons):
-    """
-    Build a scaled MLP with the given architecture.
+# Octave PMS normalizes every input AND the target to [-1, 1] via normalize.m;
+# reproduced with MinMaxScaler([-1, 1]) on inputs (pipeline) and target
+# (TransformedTargetRegressor). The trainer matches Octave's Levenberg-Marquardt
+# (net.trainFcn='trainlm') as closely as sklearn allows:
+#   solver="lbfgs"  -> quasi-Newton, the closest sklearn analogue to LM.
+#   activation="tanh" -> matches Octave's tansig/logsig family.
+# early_stopping is intentionally OFF (Octave has none; lbfgs ignores it).
 
-    Octave PMS normalizes every input AND the target to [-1, 1] via
-    normalize.m before training, because neural nets train poorly on raw,
-    differently-scaled features (here M~32 vs N~10000 vs T~52000).
-    We reproduce that exactly:
-      - MinMaxScaler([-1, 1]) on the inputs   (inside the pipeline)
-      - MinMaxScaler([-1, 1]) on the target   (TransformedTargetRegressor)
-    Predictions are automatically inverse-transformed back to real T units,
-    so the rest of the script (clamp, metrics) is unchanged.
-    """
+def build_mlp(n_layers, neurons):
     net = MLPRegressor(
-        hidden_layer_sizes = (neurons,) * n_layers,  # e.g. (30, 30, 30) for 3 layers
-        activation         = "relu",
-        solver             = "adam",
+        hidden_layer_sizes = (neurons,) * n_layers,
+        activation         = "tanh",
+        solver             = "lbfgs",
         max_iter           = 2000,
-        random_state       = SEED,    # None → non-deterministic (like PMS GA)
-        early_stopping     = True,    # holds back 10% internally for early stop
-        n_iter_no_change   = 20,
+        random_state       = SEED,   # None -> non-deterministic, like the Octave GA
     )
     pipe = Pipeline([
         ("scale_x", MinMaxScaler(feature_range=(-1, 1))),
@@ -159,36 +176,42 @@ def build_mlp(n_layers, neurons):
 # ─────────────────────────────────────────────────────────────────────
 
 
-# ── CMA-ES ARCHITECTURE SEARCH ────────────────────────────────────────
+# ── CMA-ES ARCHITECTURE SEARCH (Octave-faithful) ──────────────────────
 
-def cmaes_search(X_train, y_train):
+def cmaes_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
     """
-    Run CMA-ES to find the best (n_layers, neurons) architecture.
-
-    Fitness function: MAPE on an inner validation split carved from X_train.
-    This mirrors PMS's medval set — data the GA evaluates candidates on,
-    but that is NOT the final test set.
-
-    Returns (best_n_layers, best_neurons, best_val_mape).
+    Run CMA-ES to find the best (n_layers, neurons) architecture, faithfully
+    to Octave:
+      - objective minimised by CMA-ES = TRAINING MSE on `train` (nnscript.m: perf=thismse)
+      - a candidate is SAVED only if its medval MAPE < MAPE_GATE (nnscript.m: <0.20)
+      - after search, the best SAVED candidate is SELECTED on `val` (createmodel.m)
+    Returns (best_model, best_n_layers, best_neurons, num_saved).
     """
-    # Inner split: 80% for fitting, 20% for CMA-ES fitness
-    X_fit, X_val, y_fit, y_val = train_test_split(
-        X_train, y_train, test_size=VAL_RATIO, random_state=SEED
-    )
+    saved    = []                       # list of (model, medval_mape, n_layers, neurons)
+    fallback = {"model": None, "medval": float("inf"), "n_layers": None, "neurons": None}
 
-    def fitness(x):
+    def objective(x):
         n_layers, neurons = decode_architecture(x)
         model = build_mlp(n_layers, neurons)
         try:
-            model.fit(X_fit, y_fit)
-            preds = model.predict(X_val)
-            return safe_mape(y_val, preds)   # CMA-ES minimises → MAPE is perfect
+            model.fit(X_train, y_train)
+            train_pred = model.predict(X_train)
+            train_mse  = float(np.mean((train_pred - y_train) ** 2))   # <- CMA-ES objective
+            med_pred   = model.predict(X_medval)
+            med_mape   = safe_mape(y_medval, med_pred)
         except Exception:
-            return 999.0   # penalise failed fits heavily
+            return 1e18                 # penalise failed fits
+        if med_mape < MAPE_GATE:        # Octave save-gate
+            saved.append((model, med_mape, n_layers, neurons))
+        if med_mape < fallback["medval"]:
+            fallback["model"]    = model
+            fallback["medval"]   = med_mape
+            fallback["n_layers"] = n_layers
+            fallback["neurons"]  = neurons
+        return train_mse
 
-    # Start in the middle of the search space: 3 layers, 30 neurons
-    x0     = [0.5, 0.5]
-    sigma0 = 0.3          # initial step size in normalised [0,1] space
+    x0     = [0.5, 0.5]     # start at 3 layers, ~28 neurons
+    sigma0 = 0.3            # initial step size in normalised [0,1] space
 
     opts = {
         "maxfevals":  CMA_MAX_EVAL,
@@ -198,19 +221,27 @@ def cmaes_search(X_train, y_train):
         "tolfun":     1e-4,
     }
     if SEED is not None:
-        opts["seed"] = SEED   # make CMA-ES sampling reproducible when seeded
+        opts["seed"] = SEED
 
     es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
     while not es.stop():
-        solutions  = es.ask()
-        fitnesses  = [fitness(x) for x in solutions]
+        solutions = es.ask()
+        fitnesses = [objective(x) for x in solutions]
         es.tell(solutions, fitnesses)
 
-    best_x                = es.result.xbest
-    best_n_layers, best_neurons = decode_architecture(best_x)
-    best_val_mape         = es.result.fbest
+    # ── model selection on `val` among SAVED candidates ───────────────
+    pool = saved if saved else (
+        [(fallback["model"], fallback["medval"], fallback["n_layers"], fallback["neurons"])]
+        if fallback["model"] is not None else []
+    )
+    if not pool:
+        return None, 0, 0, 0
 
-    return best_n_layers, best_neurons, best_val_mape
+    def val_mape_of(entry):
+        return safe_mape(y_val, entry[0].predict(X_val))
+
+    best_model, _, best_layers, best_neurons = min(pool, key=val_mape_of)
+    return best_model, best_layers, best_neurons, len(saved)
 
 # ─────────────────────────────────────────────────────────────────────
 
@@ -219,8 +250,6 @@ def cmaes_search(X_train, y_train):
 
 def run_cmaes_repeated():
 
-    # Seed numpy for reproducibility of the stochastic parts when SEED is set;
-    # otherwise stay non-deterministic like the Octave GA.
     if SEED is not None:
         np.random.seed(SEED)
 
@@ -230,94 +259,80 @@ def run_cmaes_repeated():
 
     num_inputs = X.shape[1]
     print(f"Dataset  : {DATA_FILE}  ({len(df)} rows, {num_inputs} inputs)")
-    print(f"Folds    : {N_FOLDS}-fold CV  |  tag: {MODEL_TAG}")
-    print(f"Search   : CMA-ES  max_eval={CMA_MAX_EVAL} per fold")
+    print(f"Runs     : {NUM_RUNS} repeated runs  |  tag: {MODEL_TAG}")
+    print(f"Search   : CMA-ES  max_eval={CMA_MAX_EVAL} per run")
+    print(f"Protocol : Octave-faithful single split "
+          f"(finalval 20% | train/medval/val ~50/20/30 of 80%)")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
     run_results = []
-    all_actuals = []   # true T for every test row, pooled across folds
-    all_preds   = []   # clamped prediction for every test row, pooled across folds
 
-    # TRUE k-fold: split the rows into N_FOLDS disjoint folds.  Each fold is
-    # the test set exactly once; the other 4 folds are training.  This covers
-    # 100% of the rows with NO overlap between test sets (unlike a repeated
-    # random holdout).  shuffle + fixed seed matches pms_kfold.py.
-    kf = KFold(n_splits=N_FOLDS, shuffle=True, random_state=KFOLD_SEED)
-
-    for run_idx, (train_idx, test_idx) in enumerate(kf.split(X), start=1):
+    for run_idx in range(1, NUM_RUNS + 1):
         print("\n" + "=" * 70)
-        print(f"  FOLD {run_idx}/{N_FOLDS}")
+        print(f"  RUN {run_idx}/{NUM_RUNS}")
         print("=" * 70)
 
-        # ── outer fold: 4 folds train (80%) / 1 fold test (20%) ───────
-        # The test fold is never seen during search, training, or selection
-        # (= PMS finalval, but now guaranteed disjoint across folds).
-        X_train, X_test = X[train_idx], X[test_idx]
-        y_train, y_test = y[train_idx], y[test_idx]
+        (X_train, y_train, X_medval, y_medval,
+         X_val, y_val, X_final, y_final) = octave_split(X, y, SEED)
 
-        # ── CMA-ES: search for best architecture on train portion ─────
-        print("  [CMA-ES] Searching architecture...")
-        best_layers, best_neurons, val_mape = cmaes_search(X_train, y_train)
-        print(f"  Best architecture found: {best_layers} layers × {best_neurons} neurons")
-        print(f"  Best val MAPE (inner)  : {val_mape:.2f}%")
+        print("  [CMA-ES] Searching architecture (objective = training MSE)...")
+        best_model, best_layers, best_neurons, num_saved = cmaes_search(
+            X_train, y_train, X_medval, y_medval, X_val, y_val
+        )
 
-        if val_mape > MAPE_GATE:
-            print(f"  NOTE: val MAPE {val_mape:.2f}% exceeds gate {MAPE_GATE}% "
-                  f"(PMS would not archive this model)")
+        if best_model is None:
+            print("  WARNING: no candidate could be trained this run; skipping.")
+            continue
 
-        # ── Final model: retrain on FULL 80% train with best arch ─────
-        # (PMS equivalent: pick best net from bestnets/, evaluate on finalval)
-        print("  [MLP] Training final model on full train set...")
-        final_model = build_mlp(best_layers, best_neurons)
-        final_model.fit(X_train, y_train)
+        print(f"  Best architecture (selected on val): "
+              f"{best_layers} layers × {best_neurons} neurons")
+        print(f"  Candidates saved (medval MAPE < {MAPE_GATE:.0f}%): {num_saved}")
 
-        # ── Evaluate on the 20% hold-out (= PMS finalval) ─────────────
-        preds = final_model.predict(X_test)
+        # ── evaluate the selected model on finalval (the ONE reported MAPE) ─
+        preds = best_model.predict(X_final)
         preds = np.maximum(0.0, preds)   # clamp negatives, same as pms_runs.py
 
-        mape_val  = safe_mape(y_test, preds)
-        smape_val = _smape(y_test, preds)
-        mae_val   = _mae(y_test, preds)
-        rmse_val  = _rmse(y_test, preds)
-        r2_val    = safe_r2(y_test, preds)
-        n_test    = len(y_test)
+        mape_val  = safe_mape(y_final, preds)
+        smape_val = _smape(y_final, preds)
+        mae_val   = _mae(y_final, preds)
+        rmse_val  = _rmse(y_final, preds)
+        r2_val    = safe_r2(y_final, preds)
+        n_final   = len(y_final)
 
-        # ── count "bad" cases (|signed%err| > 200%, same threshold as PMS) ─
-        signed_pct = (preds - y_test) / np.maximum(np.abs(y_test), 1e-8) * 100
+        signed_pct = (preds - y_final) / np.maximum(np.abs(y_final), 1e-8) * 100
         bad_count  = int(np.sum(np.abs(signed_pct) > 200))
 
-        print(f"\n  MAPE   (test, {n_test} rows): {mape_val:.2f}%")
-        print(f"  SMAPE  (test, {n_test} rows): {smape_val:.2%}")
-        print(f"  MAE    (test, {n_test} rows): {mae_val:.1f} ms")
-        print(f"  RMSE   (test, {n_test} rows): {rmse_val:.1f} ms")
-        print(f"  R2     (test, {n_test} rows): {r2_val:.4f}")
-        print(f"  Bad cases (|err|>200%)      : {bad_count}")
+        print(f"\n  MAPE   (finalval, {n_final} rows): {mape_val:.2f}%")
+        print(f"  SMAPE  (finalval, {n_final} rows): {smape_val:.2%}")
+        print(f"  MAE    (finalval, {n_final} rows): {mae_val:.1f} ms")
+        print(f"  RMSE   (finalval, {n_final} rows): {rmse_val:.1f} ms")
+        print(f"  R2     (finalval, {n_final} rows): {r2_val:.4f}")
+        print(f"  Bad cases (|err|>200%)          : {bad_count}")
 
         run_results.append({
-            "run":          run_idx,
-            "n_layers":     best_layers,
-            "neurons":      best_neurons,
-            "val_mape":     val_mape,
-            "mape":         mape_val,
-            "smape":        smape_val,
-            "mae":          mae_val,
-            "rmse":         rmse_val,
-            "r2":           r2_val,
-            "n_test":       n_test,
-            "bad_count":    bad_count,
+            "run":        run_idx,
+            "n_layers":   best_layers,
+            "neurons":    best_neurons,
+            "candidates": num_saved,
+            "mape":       mape_val,
+            "smape":      smape_val,
+            "mae":        mae_val,
+            "rmse":       rmse_val,
+            "r2":         r2_val,
+            "n_final":    n_final,
+            "bad_count":  bad_count,
         })
 
-        # accumulate raw test rows for the POOLED-over-all-rows metrics
-        all_actuals.extend(y_test.tolist())
-        all_preds.extend(preds.tolist())
+    if not run_results:
+        print("No successful runs — nothing to report.")
+        return
 
-    # ── per-fold mean ± 95% t-CI — identical CI logic to pms_runs.py ──
+    # ── mean ± 95% t-CI across runs — identical CI logic to pms_runs.py ──
     T_CRIT = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776,
               5: 2.571,  7: 2.306, 9: 2.262, 14: 2.145, 19: 2.093}
 
     def _t_crit(n):
-        df = n - 1
-        return T_CRIT.get(df, 1.96)
+        return T_CRIT.get(n - 1, 1.96)
 
     def _avg_std_ci(key):
         vals = [r[key] for r in run_results]
@@ -332,27 +347,16 @@ def run_cmaes_repeated():
     avg_mae,   std_mae,   ci_mae   = _avg_std_ci("mae")
     avg_rmse,  std_rmse,  ci_rmse  = _avg_std_ci("rmse")
     avg_r2,    std_r2,    ci_r2    = _avg_std_ci("r2")
+    candidate_list                 = [r["candidates"] for r in run_results]
 
-    # ── POOLED over all rows (matches pms_kfold's aggregation) ──
-    all_actuals = np.asarray(all_actuals, dtype=float)
-    all_preds   = np.asarray(all_preds,   dtype=float)
-    n_pool      = len(all_actuals)
-    pool_mape   = safe_mape(all_actuals, all_preds)   # already in percent
-    pool_smape  = _smape(all_actuals, all_preds)      # fraction (×100 to show %)
-    pool_mae    = _mae(all_actuals, all_preds)
-    pool_rmse   = _rmse(all_actuals, all_preds)
-    pool_r2     = safe_r2(all_actuals, all_preds)
-
-    # ── build log (same format as pms_runs.py) ────────────────────────
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     run_lines = "\n".join(
-        f"  Fold {r['run']}: "
+        f"  Run {r['run']}: "
         f"arch={r['n_layers']}L×{r['neurons']}N  "
-        f"val_MAPE={r['val_mape']:.2f}%  "
         f"MAPE={r['mape']:.2f}%  SMAPE={r['smape']:.2%}  "
         f"MAE={r['mae']:.1f}ms  RMSE={r['rmse']:.1f}ms  R2={r['r2']:.4f}  "
-        f"n={r['n_test']}  bad={r['bad_count']}"
+        f"n={r['n_final']}  candidates={r['candidates']}  bad={r['bad_count']}"
         for r in run_results
     )
 
@@ -366,37 +370,30 @@ def run_cmaes_repeated():
         f"RUN TIMESTAMP : {now}\n"
         f"DATA FILE     : {DATA_FILE}\n"
         f"MODEL         : CMA-ES + MLPRegressor (sklearn)\n"
+        f"TRAINER       : solver=lbfgs, activation=tanh (matches Octave trainlm/tansig)\n"
         f"CONFIG        : {num_inputs} inputs -> 1 target | "
-        f"{N_FOLDS}-fold cross-validation | tag: {MODEL_TAG}\n"
-        f"SEARCH SPACE  : layers [1,5], neurons/layer [1,55], activation=relu\n"
+        f"{NUM_RUNS} repeated runs | tag: {MODEL_TAG}\n"
+        f"SEARCH SPACE  : layers [{N_LAYERS_MIN},{N_LAYERS_MAX}], "
+        f"neurons/layer [{NEURONS_MIN},{NEURONS_MAX}]\n"
         f"SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)\n"
-        f"CMA-ES BUDGET : {CMA_MAX_EVAL} evaluations per fold\n"
-        f"SPLIT         : {N_FOLDS} disjoint folds | per fold: train "
-        f"(20% inner val for CMA-ES) / 1 fold test | fold seed={KFOLD_SEED} | "
-        f"stochastic seed={SEED}\n"
-        f"METRICS       : per-fold, mean ± 95% t-CI across folds, AND pooled "
-        f"over all rows (matches pms_kfold) | MAPE in %, SMAPE on 0..200% scale\n"
-        f"CONFOUNDS     : this run used {CMA_MAX_EVAL} evals/fold. At default "
-        f"budgets CMA-ES uses 200 evals/fold vs the GA's 900 — an eval-budget "
-        f"confound when attributing differences to the search paradigm. Also, "
-        f"CMA-ES searches a single uniform width while the GA searches per-layer "
-        f"widths (architecture-space asymmetry)\n"
+        f"CMA-ES BUDGET : {CMA_MAX_EVAL} evaluations per run | objective=training MSE\n"
+        f"PROTOCOL      : Octave-faithful single split per run — finalval 20%, "
+        f"then train/medval/val ~50/20/30 of the 80%. medval is the save-gate "
+        f"(<{MAPE_GATE:.0f}%), val selects the best saved net, finalval is the one "
+        f"reported MAPE. No k-fold, no inner/outer.\n"
+        f"SEED          : {SEED}\n"
+        f"METRICS       : per-run on finalval + mean ± 95% t-CI across runs | "
+        f"MAPE in %, SMAPE on 0..200% scale\n"
         f"{'─' * 70}\n"
         f"{run_lines}\n"
         f"{'─' * 70}\n"
+        f"CANDIDATE COUNTS : {candidate_list}\n"
         f"AVG MAPE  : {_fmt(avg_mape,  std_mape,  ci_mape,  '%')}\n"
         f"AVG SMAPE : {_fmt(avg_smape * 100, std_smape * 100, ci_smape * 100, '%')}\n"
         f"AVG MAE   : {_fmt(avg_mae,   std_mae,   ci_mae,   ' ms')}\n"
         f"AVG RMSE  : {_fmt(avg_rmse,  std_rmse,  ci_rmse,  ' ms')}\n"
         f"AVG R2    : {avg_r2:.4f}  (std ± {std_r2:.4f}  |  95% CI ± {ci_r2:.4f}  "
         f"→ [{avg_r2 - ci_r2:.4f}, {avg_r2 + ci_r2:.4f}])\n"
-        f"{'─' * 70}\n"
-        f"POOLED over all {n_pool} rows (pms_kfold-style aggregation):\n"
-        f"POOL MAPE : {pool_mape:.2f}%\n"
-        f"POOL SMAPE: {pool_smape * 100:.2f}%\n"
-        f"POOL MAE  : {pool_mae:.1f} ms\n"
-        f"POOL RMSE : {pool_rmse:.1f} ms\n"
-        f"POOL R2   : {pool_r2:.4f}\n"
         f"{'=' * 70}\n"
     )
 
