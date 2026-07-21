@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from deap import base, creator, tools
 from sklearn.neural_network import MLPRegressor
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.pipeline import Pipeline
 from sklearn.compose import TransformedTargetRegressor
@@ -33,21 +33,22 @@ DATA_FILE   = "master_dataset.csv"   # swap this to run calibration variants
 RESULTS_DIR = "ga_results"
 MODEL_TAG   = "NSMT"                  # label for this run  e.g. NSMT, NSMKT, etc.
 
-# Repeated INDEPENDENT runs (NOT k-fold), exactly like pms_runs.py: each run
-# does one fresh Octave-style split and reports ONE finalval MAPE, then we
-# aggregate mean ± 95% CI across runs.
-NUM_RUNS = _env_int("PMS_RUNS", _env_int("PMS_FOLDS", 5))
+# K-FOLD cross-validation, exactly like pms_kfold.py. Octave's ONE internal
+# 80-20 split (createmodel.m line 49) is what a fold IS; KFold just repeats it
+# 5 times over different partitions, so every row is the held-out 20% exactly
+# once. There is NO nested "80-20 inside the 80":
+#   * the fold's 20% held-out = Octave's finalval = the reported MAPE
+#     (the "bottom-right MAPE" in the PMS graph, createmodel.m line 539-540)
+#   * the fold's 80% is split ONLY into the sets the search needs, never into
+#     another finalval.
+K_FOLDS    = _env_int("PMS_FOLDS", 5)
+KFOLD_SEED = 42   # matches pms_kfold.py -> identical folds -> directly comparable
 
-# ── OCTAVE-FAITHFUL SPLIT (createmodel.m lines 49 + 57) ───────────────
-# Octave PMS splits the data ONCE into four disjoint sets:
-#   finalval  = 20% of ALL data        -> the single reported MAPE (never seen)
-#   train / medval / val  from the 80% -> ~50% / ~20% / ~30% of that 80%
-# and each set has a distinct job (there is NO "inner/outer" k-fold here):
-#   train  -> the network is actually trained on this
-#   medval -> SAVE GATE: keep a candidate only if its medval MAPE < 20%
-#   val    -> SELECT the best saved candidate on this
-#   finalval -> report one MAPE on this held-out set
-FINALVAL_RATIO     = 0.20   # createmodel.m: subset(trainver1,1,1,0.2)
+# ── How the fold's 80% is split for the search (createmodel.m line 57) ─
+#   train  (~50% of the 80%) -> the network is actually trained on this
+#   medval (~20% of the 80%) -> SAVE GATE: keep a candidate only if medval MAPE < 20%
+#   val    (~30% of the 80%) -> SELECT the best saved candidate on this
+# The selected net is then scored on the fold's held-out 20% (the reported MAPE).
 VAL_RATIO_OF_80    = 0.30   # createmodel.m: subset(trainver2,...,0.3)
 MEDVAL_RATIO_OF_80 = 0.20   # createmodel.m: subset(trainver2,...,0.2)
 # train = the remaining ~0.50 of the 80%.
@@ -126,30 +127,28 @@ def safe_r2(y_true, y_pred):
 # ─────────────────────────────────────────────────────────────────────
 
 
-# ── OCTAVE-FAITHFUL 4-WAY SPLIT ───────────────────────────────────────
+# ── SPLIT THE FOLD'S 80% INTO train / medval / val (NO extra finalval) ─
 
-def octave_split(X, y, seed):
+def inner_split(X, y, seed):
     """
-    Reproduce createmodel.m's split:
-      finalval = 20% of all
-      then split the 80% into train (~50%) / medval (~20%) / val (~30%).
-    Returns X_train, y_train, X_medval, y_medval, X_val, y_val, X_final, y_final.
+    Split a fold's 80% training data into train / medval / val (~50/20/30),
+    matching Octave's train/medval/val proportions (createmodel.m line 57).
+    NO finalval is carved here: the fold's held-out 20% is the reported set
+    (Octave's finalval / bottom-right graph MAPE role), so we never do an
+    "80-20 inside the 80".
+    Returns X_train, y_train, X_medval, y_medval, X_val, y_val.
     """
-    # 1) peel off finalval (20% of all)  -> createmodel.m line 49
-    X_tv, X_final, y_tv, y_final = train_test_split(
-        X, y, test_size=FINALVAL_RATIO, random_state=seed
-    )
-    # 2) peel off val (30% of the 80%)   -> createmodel.m line 57
+    # 1) peel off val (30% of the 80%)   -> createmodel.m line 57
     X_tm, X_val, y_tm, y_val = train_test_split(
-        X_tv, y_tv, test_size=VAL_RATIO_OF_80, random_state=seed
+        X, y, test_size=VAL_RATIO_OF_80, random_state=seed
     )
-    # 3) split the rest into train / medval.  medval is 20% of the 80%,
+    # 2) split the rest into train / medval.  medval is 20% of the 80%,
     #    which is (20/70) of what remains after val was removed.
     medval_frac_of_rest = MEDVAL_RATIO_OF_80 / (1.0 - VAL_RATIO_OF_80)
     X_train, X_medval, y_train, y_medval = train_test_split(
         X_tm, y_tm, test_size=medval_frac_of_rest, random_state=seed
     )
-    return X_train, y_train, X_medval, y_medval, X_val, y_val, X_final, y_final
+    return X_train, y_train, X_medval, y_medval, X_val, y_val
 
 # ─────────────────────────────────────────────────────────────────────
 
@@ -314,7 +313,7 @@ def ga_search(X_train, y_train, X_medval, y_medval, X_val, y_val):
 
 # ── MAIN LOOP ─────────────────────────────────────────────────────────
 
-def run_ga_repeated():
+def run_ga_kfold():
 
     if SEED is not None:
         random.seed(SEED)
@@ -326,22 +325,35 @@ def run_ga_repeated():
 
     num_inputs = X.shape[1]
     print(f"Dataset  : {DATA_FILE}  ({len(df)} rows, {num_inputs} inputs)")
-    print(f"Runs     : {NUM_RUNS} repeated runs  |  tag: {MODEL_TAG}")
+    print(f"K-folds  : {K_FOLDS}-fold CV (seed {KFOLD_SEED})  |  tag: {MODEL_TAG}")
     print(f"Search   : GA (DEAP)  pop={POP_SIZE} x gen={N_GEN} = "
-          f"{POP_SIZE * N_GEN} evals per run")
-    print(f"Protocol : Octave-faithful single split "
-          f"(finalval 20% | train/medval/val ~50/20/30 of 80%)")
+          f"{POP_SIZE * N_GEN} evals per fold")
+    print(f"Protocol : k-fold like pms_kfold.py — one Octave-style 80-20 per fold, "
+          f"repeated {K_FOLDS}x. The 80% is split into train/medval/val; the held-out "
+          f"20% is the reported MAPE (= Octave finalval / bottom-right graph).")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    run_results = []
 
-    for run_idx in range(1, NUM_RUNS + 1):
+    # TRUE k-fold: same splitter and seed as pms_kfold.py, so the Python and
+    # Octave experiments see IDENTICAL folds and are directly comparable.
+    kf = KFold(n_splits=K_FOLDS, shuffle=True, random_state=KFOLD_SEED)
+
+    fold_results = []
+    all_actuals  = []   # every held-out row's true T, pooled across folds
+    all_preds    = []   # every held-out row's prediction, pooled across folds
+
+    for fold_idx, (train_index, test_index) in enumerate(kf.split(X), start=1):
         print("\n" + "=" * 70)
-        print(f"  RUN {run_idx}/{NUM_RUNS}")
+        print(f"  FOLD {fold_idx}/{K_FOLDS}")
         print("=" * 70)
 
+        X_tr_fold, X_test_fold = X[train_index], X[test_index]
+        y_tr_fold, y_test_fold = y[train_index], y[test_index]
+
+        # ── split the fold's 80% into train/medval/val for the search ────
+        # (NO extra finalval — the held-out 20% below is the reported set.)
         (X_train, y_train, X_medval, y_medval,
-         X_val, y_val, X_final, y_final) = octave_split(X, y, SEED)
+         X_val, y_val) = inner_split(X_tr_fold, y_tr_fold, SEED)
 
         print("  [GA] Evolving architecture (fitness = training MSE)...")
         best_model, best_widths, n_layers, best_act, num_saved = ga_search(
@@ -349,36 +361,36 @@ def run_ga_repeated():
         )
 
         if best_model is None:
-            print("  WARNING: no candidate could be trained this run; skipping.")
+            print("  WARNING: no candidate could be trained this fold; skipping.")
             continue
 
         print(f"  Best architecture (selected on val): "
               f"{n_layers} layers, widths {best_widths}, act={best_act}")
         print(f"  Candidates saved (medval MAPE < {MAPE_GATE:.0f}%): {num_saved}")
 
-        # ── evaluate the selected model on finalval (the ONE reported MAPE) ─
-        preds = best_model.predict(X_final)
-        preds = np.maximum(0.0, preds)   # clamp negatives, same as pms_runs.py
+        # ── evaluate on the fold's held-out 20% (the reported MAPE) ─────
+        preds = best_model.predict(X_test_fold)
+        preds = np.maximum(0.0, preds)   # clamp negatives, same as pms_kfold.py
 
-        mape_val  = safe_mape(y_final, preds)
-        smape_val = _smape(y_final, preds)
-        mae_val   = _mae(y_final, preds)
-        rmse_val  = _rmse(y_final, preds)
-        r2_val    = safe_r2(y_final, preds)
-        n_final   = len(y_final)
+        mape_val  = safe_mape(y_test_fold, preds)
+        smape_val = _smape(y_test_fold, preds)
+        mae_val   = _mae(y_test_fold, preds)
+        rmse_val  = _rmse(y_test_fold, preds)
+        r2_val    = safe_r2(y_test_fold, preds)
+        n_test    = len(y_test_fold)
 
-        signed_pct = (preds - y_final) / np.maximum(np.abs(y_final), 1e-8) * 100
+        signed_pct = (preds - y_test_fold) / np.maximum(np.abs(y_test_fold), 1e-8) * 100
         bad_count  = int(np.sum(np.abs(signed_pct) > 200))
 
-        print(f"\n  MAPE   (finalval, {n_final} rows): {mape_val:.2f}%")
-        print(f"  SMAPE  (finalval, {n_final} rows): {smape_val:.2%}")
-        print(f"  MAE    (finalval, {n_final} rows): {mae_val:.1f} ms")
-        print(f"  RMSE   (finalval, {n_final} rows): {rmse_val:.1f} ms")
-        print(f"  R2     (finalval, {n_final} rows): {r2_val:.4f}")
-        print(f"  Bad cases (|err|>200%)          : {bad_count}")
+        print(f"\n  External MAPE  (fold {fold_idx}, {n_test} rows): {mape_val:.2f}%")
+        print(f"  External SMAPE (fold {fold_idx}, {n_test} rows): {smape_val:.2%}")
+        print(f"  External MAE   (fold {fold_idx}, {n_test} rows): {mae_val:.1f} ms")
+        print(f"  External RMSE  (fold {fold_idx}, {n_test} rows): {rmse_val:.1f} ms")
+        print(f"  External R2    (fold {fold_idx}, {n_test} rows): {r2_val:.4f}")
+        print(f"  Bad cases (|err|>200%)         : {bad_count}")
 
-        run_results.append({
-            "run":        run_idx,
+        fold_results.append({
+            "fold":       fold_idx,
             "n_layers":   n_layers,
             "widths":     "-".join(str(w) for w in best_widths),
             "activation": best_act,
@@ -388,15 +400,17 @@ def run_ga_repeated():
             "mae":        mae_val,
             "rmse":       rmse_val,
             "r2":         r2_val,
-            "n_final":    n_final,
+            "n_test":     n_test,
             "bad_count":  bad_count,
         })
+        all_actuals.extend(y_test_fold.tolist())
+        all_preds.extend(preds.tolist())
 
-    if not run_results:
-        print("No successful runs — nothing to report.")
+    if not fold_results:
+        print("No successful folds — nothing to report.")
         return
 
-    # ── mean ± 95% t-CI across runs — identical CI logic to pms_runs.py ──
+    # ── per-fold mean ± 95% t-CI — identical CI logic to pms_kfold.py ──
     T_CRIT = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776,
               5: 2.571,  7: 2.306, 9: 2.262, 14: 2.145, 19: 2.093}
 
@@ -404,7 +418,7 @@ def run_ga_repeated():
         return T_CRIT.get(n - 1, 1.96)
 
     def _avg_std_ci(key):
-        vals = [r[key] for r in run_results]
+        vals = [r[key] for r in fold_results]
         n    = len(vals)
         avg  = float(np.mean(vals))
         std  = float(np.std(vals, ddof=1)) if n > 1 else 0.0
@@ -416,17 +430,27 @@ def run_ga_repeated():
     avg_mae,   std_mae,   ci_mae   = _avg_std_ci("mae")
     avg_rmse,  std_rmse,  ci_rmse  = _avg_std_ci("rmse")
     avg_r2,    std_r2,    ci_r2    = _avg_std_ci("r2")
-    candidate_list                 = [r["candidates"] for r in run_results]
+    candidate_list                 = [r["candidates"] for r in fold_results]
+
+    # ── POOLED over all rows (every row tested exactly once) — pms_kfold-style ─
+    all_actuals = np.asarray(all_actuals, dtype=float)
+    all_preds   = np.asarray(all_preds,   dtype=float)
+    n_pool      = len(all_actuals)
+    pool_mape   = safe_mape(all_actuals, all_preds)
+    pool_smape  = _smape(all_actuals, all_preds)
+    pool_mae    = _mae(all_actuals, all_preds)
+    pool_rmse   = _rmse(all_actuals, all_preds)
+    pool_r2     = safe_r2(all_actuals, all_preds)
 
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    run_lines = "\n".join(
-        f"  Run {r['run']}: "
+    fold_lines = "\n".join(
+        f"  Fold {r['fold']}: "
         f"arch={r['n_layers']}L[{r['widths']}] act={r['activation']}  "
         f"MAPE={r['mape']:.2f}%  SMAPE={r['smape']:.2%}  "
         f"MAE={r['mae']:.1f}ms  RMSE={r['rmse']:.1f}ms  R2={r['r2']:.4f}  "
-        f"n={r['n_final']}  candidates={r['candidates']}  bad={r['bad_count']}"
-        for r in run_results
+        f"n={r['n_test']}  candidates={r['candidates']}  bad={r['bad_count']}"
+        for r in fold_results
     )
 
     def _fmt(avg, std, ci, suffix=""):
@@ -439,26 +463,35 @@ def run_ga_repeated():
         f"RUN TIMESTAMP : {now}\n"
         f"DATA FILE     : {DATA_FILE}\n"
         f"MODEL         : Genetic Algorithm (DEAP) + MLPRegressor (sklearn)\n"
-        f"TRAINER       : solver=lbfgs, activation=tanh (matches Octave trainlm/tansig)\n"
+        f"TRAINER       : solver=lbfgs, activation=SEARCHED (matches Octave trainlm)\n"
         f"CONFIG        : {num_inputs} inputs -> 1 target | "
-        f"{NUM_RUNS} repeated runs | tag: {MODEL_TAG}\n"
+        f"{K_FOLDS}-fold CV (seed {KFOLD_SEED}) | tag: {MODEL_TAG}\n"
         f"SEARCH SPACE  : layers [{N_LAYERS_MIN},{N_LAYERS_MAX}], "
         f"neurons/layer [{NEURONS_MIN},{NEURONS_MAX}], "
         f"activation in {ACTIVATIONS}\n"
         f"SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)\n"
         f"GA SETTINGS   : pop={POP_SIZE} x gen={N_GEN} = {POP_SIZE * N_GEN} evals | "
         f"cxpb={CXPB} mutpb={MUTPB} tournsize={TOURNSIZE} | fitness=training MSE\n"
-        f"PROTOCOL      : Octave-faithful single split per run — finalval 20%, "
-        f"then train/medval/val ~50/20/30 of the 80%. medval is the save-gate "
-        f"(<{MAPE_GATE:.0f}%), val selects the best saved net, finalval is the one "
-        f"reported MAPE. No k-fold, no inner/outer.\n"
+        f"PROTOCOL      : k-fold like pms_kfold.py — ONE Octave-style 80-20 per "
+        f"fold, repeated {K_FOLDS}x, every row held out exactly once. The 80% is "
+        f"split into train (fits candidates) / medval (gate <{MAPE_GATE:.0f}%) / "
+        f"val (selects best net). NO nested finalval; the held-out 20% is the "
+        f"reported MAPE (= Octave finalval / bottom-right graph MAPE).\n"
         f"SEED          : {SEED}\n"
-        f"METRICS       : per-run on finalval + mean ± 95% t-CI across runs | "
-        f"MAPE in %, SMAPE on 0..200% scale\n"
+        f"METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across "
+        f"folds | MAPE in %, SMAPE on 0..200% scale\n"
         f"{'─' * 70}\n"
-        f"{run_lines}\n"
+        f"{fold_lines}\n"
         f"{'─' * 70}\n"
         f"CANDIDATE COUNTS : {candidate_list}\n"
+        f"POOLED over all {n_pool} rows:\n"
+        f"  POOL MAPE : {pool_mape:.2f}%\n"
+        f"  POOL SMAPE: {pool_smape * 100:.2f}%\n"
+        f"  POOL MAE  : {pool_mae:.1f} ms\n"
+        f"  POOL RMSE : {pool_rmse:.1f} ms\n"
+        f"  POOL R2   : {pool_r2:.4f}\n"
+        f"{'─' * 70}\n"
+        f"MEAN ± 95% t-CI ACROSS {K_FOLDS} FOLDS:\n"
         f"AVG MAPE  : {_fmt(avg_mape,  std_mape,  ci_mape,  '%')}\n"
         f"AVG SMAPE : {_fmt(avg_smape * 100, std_smape * 100, ci_smape * 100, '%')}\n"
         f"AVG MAE   : {_fmt(avg_mae,   std_mae,   ci_mae,   ' ms')}\n"
@@ -473,15 +506,15 @@ def run_ga_repeated():
     with open(LOG_FILE, "a") as f:
         f.write(log_text)
 
-    pd.DataFrame(run_results).to_csv(
-        os.path.join(RESULTS_DIR, f"run_results_{MODEL_TAG}_ga.csv"),
+    pd.DataFrame(fold_results).to_csv(
+        os.path.join(RESULTS_DIR, f"kfold_results_{MODEL_TAG}_ga.csv"),
         index=False
     )
 
     print(f"Log : {LOG_FILE}")
-    print(f"CSV : {os.path.join(RESULTS_DIR, f'run_results_{MODEL_TAG}_ga.csv')}")
+    print(f"CSV : {os.path.join(RESULTS_DIR, f'kfold_results_{MODEL_TAG}_ga.csv')}")
 
 
 # ── ENTRY POINT ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    run_ga_repeated()
+    run_ga_kfold()
