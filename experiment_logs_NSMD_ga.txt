@@ -1,10 +1,10 @@
 
 ======================================================================
-RUN TIMESTAMP : 2026-10-01 18:42:38
-DATA FILE     : master_dataset_NSMKT.csv
+RUN TIMESTAMP : 2026-10-01 16:02:34
+DATA FILE     : master_dataset_NSMD.csv
 MODEL         : Genetic Algorithm (DEAP) + MLPRegressor (sklearn)
 TRAINER       : solver=lbfgs, activation=SEARCHED (matches Octave trainlm)
-CONFIG        : 4 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMKT
+CONFIG        : 3 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMD
 SEARCH SPACE  : layers [3,4], neurons/layer [1,55], activation in ['tanh', 'logistic', 'relu', 'identity']
 SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)
 GA SETTINGS   : pop=30 x gen=30 = 900 evals | cxpb=0.8 mutpb=0.2 tournsize=3 | fitness=training MSE
@@ -12,24 +12,24 @@ PROTOCOL      : k-fold like pms_kfold.py — ONE Octave-style 80-20 per fold, re
 SEED          : None
 METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds | MAPE in %, SMAPE on 0..200% scale
 ──────────────────────────────────────────────────────────────────────
-  Fold 1: arch=3L[15-41-33] act=tanh  MAPE=9.22%  SMAPE=8.72%  MAE=2180.4ms  RMSE=6527.4ms  R2=0.9666  n=126  candidates=729  bad=0
-  Fold 2: arch=3L[44-54-24] act=relu  MAPE=9.54%  SMAPE=9.47%  MAE=2034.3ms  RMSE=5011.2ms  R2=0.9480  n=126  candidates=756  bad=0
-  Fold 3: arch=3L[48-48-53] act=relu  MAPE=9.66%  SMAPE=9.29%  MAE=1424.1ms  RMSE=2883.0ms  R2=0.9778  n=126  candidates=744  bad=0
-  Fold 4: arch=3L[55-48-13] act=relu  MAPE=9.23%  SMAPE=9.10%  MAE=3184.8ms  RMSE=14809.8ms  R2=0.7747  n=126  candidates=755  bad=0
-  Fold 5: arch=3L[50-53-14] act=relu  MAPE=9.13%  SMAPE=9.49%  MAE=2932.3ms  RMSE=9741.8ms  R2=0.9217  n=126  candidates=735  bad=0
+  Fold 1: arch=3L[55-22-13] act=relu  MAPE=9.44%  SMAPE=9.19%  MAE=127.7ms  RMSE=228.4ms  R2=0.9350  n=126  candidates=767  bad=0
+  Fold 2: arch=3L[52-49-48] act=relu  MAPE=11.24%  SMAPE=10.25%  MAE=134.4ms  RMSE=247.4ms  R2=0.9263  n=126  candidates=733  bad=1
+  Fold 3: arch=4L[55-54-11-21] act=relu  MAPE=10.18%  SMAPE=9.85%  MAE=150.9ms  RMSE=243.3ms  R2=0.9127  n=126  candidates=728  bad=0
+  Fold 4: arch=3L[46-48-21] act=relu  MAPE=9.05%  SMAPE=8.62%  MAE=149.3ms  RMSE=245.9ms  R2=0.9326  n=126  candidates=734  bad=0
+  Fold 5: arch=3L[49-42-18] act=relu  MAPE=9.19%  SMAPE=8.96%  MAE=118.7ms  RMSE=189.7ms  R2=0.9622  n=126  candidates=718  bad=0
 ──────────────────────────────────────────────────────────────────────
-CANDIDATE COUNTS : [729, 756, 744, 755, 735]
+CANDIDATE COUNTS : [767, 733, 728, 734, 718]
 POOLED over all 630 rows:
-  POOL MAPE : 9.36%
-  POOL SMAPE: 9.21%
-  POOL MAE  : 2351.2 ms
-  POOL RMSE : 8834.8 ms
-  POOL R2   : 0.9103
+  POOL MAPE : 9.82%
+  POOL SMAPE: 9.37%
+  POOL MAE  : 136.2 ms
+  POOL RMSE : 231.9 ms
+  POOL R2   : 0.9355
 ──────────────────────────────────────────────────────────────────────
 MEAN ± 95% t-CI ACROSS 5 FOLDS:
-AVG MAPE  : 9.36%  (std ± 0.23%  |  95% CI ± 0.29%  → [9.07%, 9.64%])
-AVG SMAPE : 9.21%  (std ± 0.32%  |  95% CI ± 0.39%  → [8.82%, 9.61%])
-AVG MAE   : 2351.20 ms  (std ± 710.92 ms  |  95% CI ± 882.58 ms  → [1468.63 ms, 3233.78 ms])
-AVG RMSE  : 7794.65 ms  (std ± 4649.79 ms  |  95% CI ± 5772.56 ms  → [2022.09 ms, 13567.21 ms])
-AVG R2    : 0.9177  (std ± 0.0828  |  95% CI ± 0.1027  → [0.8150, 1.0205])
+AVG MAPE  : 9.82%  (std ± 0.90%  |  95% CI ± 1.12%  → [8.70%, 10.94%])
+AVG SMAPE : 9.37%  (std ± 0.67%  |  95% CI ± 0.83%  → [8.55%, 10.20%])
+AVG MAE   : 136.21 ms  (std ± 13.89 ms  |  95% CI ± 17.24 ms  → [118.96 ms, 153.45 ms])
+AVG RMSE  : 230.92 ms  (std ± 24.24 ms  |  95% CI ± 30.09 ms  → [200.83 ms, 261.02 ms])
+AVG R2    : 0.9338  (std ± 0.0181  |  95% CI ± 0.0225  → [0.9113, 0.9562])
 ======================================================================

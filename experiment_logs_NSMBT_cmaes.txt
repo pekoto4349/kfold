@@ -1,35 +1,35 @@
 
 ======================================================================
-RUN TIMESTAMP : 2026-10-01 19:49:08
-DATA FILE     : master_dataset_NSMDhatT.csv
-MODEL         : Genetic Algorithm (DEAP) + MLPRegressor (sklearn)
+RUN TIMESTAMP : 2026-10-02 10:38:01
+DATA FILE     : master_dataset_NSMBT.csv
+MODEL         : CMA-ES + MLPRegressor (sklearn)
 TRAINER       : solver=lbfgs, activation=SEARCHED (matches Octave trainlm)
-CONFIG        : 4 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMDhatT
+CONFIG        : 4 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMBT
 SEARCH SPACE  : layers [3,4], neurons/layer [1,55], activation in ['tanh', 'logistic', 'relu', 'identity']
 SCALING       : inputs + target MinMax[-1,1] (matches Octave normalize.m)
-GA SETTINGS   : pop=30 x gen=30 = 900 evals | cxpb=0.8 mutpb=0.2 tournsize=3 | fitness=training MSE
+CMA-ES BUDGET : 200 evaluations per fold | objective=training MSE
 PROTOCOL      : k-fold like pms_kfold.py — ONE Octave-style 80-20 per fold, repeated 5x, every row held out exactly once. The 80% is split into train (fits candidates) / medval (gate <20%) / val (selects best net). NO nested finalval; the held-out 20% is the reported MAPE (= Octave finalval / bottom-right graph MAPE).
 SEED          : None
 METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds | MAPE in %, SMAPE on 0..200% scale
 ──────────────────────────────────────────────────────────────────────
-  Fold 1: arch=3L[54-30-53] act=relu  MAPE=7.89%  SMAPE=7.91%  MAE=1797.9ms  RMSE=4489.7ms  R2=0.9715  n=126  candidates=757  bad=0
-  Fold 2: arch=3L[29-53-54] act=relu  MAPE=10.50%  SMAPE=10.51%  MAE=2643.5ms  RMSE=7148.5ms  R2=0.9355  n=126  candidates=768  bad=0
-  Fold 3: arch=3L[52-47-17] act=relu  MAPE=9.64%  SMAPE=9.14%  MAE=2136.4ms  RMSE=5903.9ms  R2=0.9633  n=126  candidates=761  bad=0
-  Fold 4: arch=3L[40-55-53] act=relu  MAPE=9.36%  SMAPE=9.42%  MAE=1520.2ms  RMSE=3058.2ms  R2=0.9772  n=126  candidates=768  bad=0
-  Fold 5: arch=3L[51-51-46] act=relu  MAPE=10.88%  SMAPE=10.66%  MAE=4193.3ms  RMSE=12939.3ms  R2=0.8855  n=126  candidates=747  bad=0
+  Fold 1: arch=4L×51N act=relu  MAPE=9.50%  SMAPE=9.28%  MAE=2670.2ms  RMSE=8023.0ms  R2=0.9496  n=126  candidates=152  bad=0
+  Fold 2: arch=3L×38N act=relu  MAPE=8.04%  SMAPE=8.14%  MAE=1463.5ms  RMSE=2983.0ms  R2=0.9816  n=126  candidates=174  bad=0
+  Fold 3: arch=4L×54N act=relu  MAPE=11.13%  SMAPE=10.34%  MAE=1916.1ms  RMSE=5473.3ms  R2=0.9198  n=126  candidates=173  bad=0
+  Fold 4: arch=4L×23N act=relu  MAPE=8.47%  SMAPE=8.29%  MAE=2544.2ms  RMSE=11980.7ms  R2=0.8525  n=126  candidates=173  bad=0
+  Fold 5: arch=4L×40N act=relu  MAPE=9.31%  SMAPE=9.16%  MAE=2441.1ms  RMSE=6012.4ms  R2=0.9702  n=126  candidates=165  bad=0
 ──────────────────────────────────────────────────────────────────────
-CANDIDATE COUNTS : [757, 768, 761, 768, 747]
+CANDIDATE COUNTS : [152, 174, 173, 173, 165]
 POOLED over all 630 rows:
-  POOL MAPE : 9.65%
-  POOL SMAPE: 9.53%
-  POOL MAE  : 2458.3 ms
-  POOL RMSE : 7521.9 ms
+  POOL MAPE : 9.29%
+  POOL SMAPE: 9.04%
+  POOL MAE  : 2207.0 ms
+  POOL RMSE : 7522.1 ms
   POOL R2   : 0.9350
 ──────────────────────────────────────────────────────────────────────
 MEAN ± 95% t-CI ACROSS 5 FOLDS:
-AVG MAPE  : 9.65%  (std ± 1.16%  |  95% CI ± 1.44%  → [8.21%, 11.10%])
-AVG SMAPE : 9.53%  (std ± 1.12%  |  95% CI ± 1.39%  → [8.14%, 10.92%])
-AVG MAE   : 2458.26 ms  (std ± 1056.46 ms  |  95% CI ± 1311.55 ms  → [1146.71 ms, 3769.82 ms])
-AVG RMSE  : 6707.92 ms  (std ± 3804.97 ms  |  95% CI ± 4723.73 ms  → [1984.19 ms, 11431.66 ms])
-AVG R2    : 0.9466  (std ± 0.0377  |  95% CI ± 0.0469  → [0.8997, 0.9935])
+AVG MAPE  : 9.29%  (std ± 1.19%  |  95% CI ± 1.48%  → [7.81%, 10.77%])
+AVG SMAPE : 9.04%  (std ± 0.89%  |  95% CI ± 1.10%  → [7.94%, 10.14%])
+AVG MAE   : 2207.01 ms  (std ± 505.10 ms  |  95% CI ± 627.06 ms  → [1579.94 ms, 2834.07 ms])
+AVG RMSE  : 6894.47 ms  (std ± 3363.08 ms  |  95% CI ± 4175.14 ms  → [2719.33 ms, 11069.62 ms])
+AVG R2    : 0.9347  (std ± 0.0516  |  95% CI ± 0.0641  → [0.8707, 0.9988])
 ======================================================================
