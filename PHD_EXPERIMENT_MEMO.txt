@@ -1,0 +1,326 @@
+PHD FaaS SURROGATE EXPERIMENT — WORKING MEMO
+============================================
+Purpose: plain-language reference to carry into new chats. Append new sections at the
+end under "APPENDIX" with date lines. Last updated: 2026-10-05.
+
+--- HOW TO USE THIS FILE ---
+- Read top-to-bottom for the full story once.
+- Add new paragraphs at the bottom under APPENDIX (do not delete older text).
+- Paths: scripts and CSVs live under /home/cgiannak/kfold unless noted.
+
+
+================================================================================
+1. THE ONE-SENTENCE PROJECT
+================================================================================
+
+We measured 630 runs of a split-join FaaS workflow (Node-RED + OpenWhisk). Each run
+has knobs S, N, M and result T (milliseconds). We build surrogates that predict T
+from the knobs, and we compare HOW we build them (Octave legacy vs Python GA vs
+CMA-ES vs simple baselines), using the same honest test protocol where possible.
+
+
+================================================================================
+2. THE VARIABLES (NO JARGON)
+================================================================================
+
+S — chunk size (how many tasks per OpenWhisk activation).
+N — total job size (tasks in the job).
+M — max parallel containers (capacity cap).
+T — end-to-end time we predict (milliseconds).
+
+Derived (from S, N, M only):
+  K = ceil(N/S)  — number of chunks / activations.
+  B = ceil(K/M)  — number of "waves" if K > M.
+  U = K/M        — utilization (queueing-style ratio).
+
+Saturated row: K > M (more chunks than simultaneous slots → queue / multiple waves).
+Unsaturated row: K <= M (everything can run in one wave; no capacity queue).
+
+Calibration CSVs (NSMKT, etc.) add ONE extra column (e.g. K) before T; same 630 rows.
+
+
+================================================================================
+3. THE HONEST TEST: 5-FOLD CROSS-VALIDATION (ALL MAIN SCRIPTS)
+================================================================================
+
+Problem: if you train and test on the same rows, scores look fake-good.
+
+Fix: 630 rows, shuffle with fixed seed 42. Split into 5 groups of 126. Repeat 5 times:
+  - Train on 504 rows (4 groups).
+  - Test on 126 rows (1 group), never seen during training or architecture search.
+Every row is tested exactly once. Reported MAPE is from these test predictions pooled
+(630 rows) or averaged per fold.
+
+This outer loop is the same IDEA for Octave pms_kfold, ga_mlp_runs, cmaes_mlp_runs.
+
+Inside the 504 training rows (Python + Octave spirit):
+  - train (~50% of 504) — fit each candidate network.
+  - medval (~20%) — SAVE only if MAPE here < 20% (Octave gate, not a 9% floor).
+  - val (~30%) — pick the best saved candidate.
+Then score the outer 126 test rows. The 20% gate filters bad nets during search;
+it does NOT force final test MAPE to 9%.
+
+
+================================================================================
+4. NEURAL NET (MLP) — WHAT IT IS
+================================================================================
+
+An MLP is a small stack of layers. Inputs (S, N, M) go in; one number (predicted T)
+comes out. Between input and output are hidden layers with "neurons."
+
+Two separate jobs:
+  (A) ARCHITECTURE — how many layers, how many neurons, which activation function.
+      Chosen by SEARCH (GA or CMA-ES in your project), or fixed by hand.
+  (B) WEIGHTS — the internal numbers that make the net accurate. Chosen by TRAINER
+      (Octave: Levenberg-Marquardt; Python: L-BFGS).
+
+The genetic algorithm does NOT set weights. It only proposes shapes; the trainer sets
+weights for each shape.
+
+
+================================================================================
+5. PYTHON MLP PIPELINE SETTINGS (ga_mlp_runs / cmaes_mlp_runs)
+================================================================================
+
+Input scaling: MinMax to [-1, 1] for S, N, M (matches Octave normalize.m idea).
+
+Target T:
+  - log1p(T) then scale to [-1, 1] for training.
+  - predict() automatically applies expm1 to return real milliseconds.
+  - Why log: a few huge T values dominate training without it; folds become unstable.
+  - MAPE is computed on real ms after inverse transform (not a delog bug).
+
+alpha (default 1e-2, env PMS_ALPHA): L2 penalty on large weights. Reduces overfit
+  on ~250 inner-train points per fold. Higher = simpler model; lower = can overfit.
+
+max_iter (300): max L-BFGS steps per candidate network (cost cap per GA/CMA-ES try).
+
+solver lbfgs: weight trainer; closest sklearn analogue to Octave LM.
+
+Activation: searched among tanh, logistic, relu, identity. relu often wins on logs.
+
+Search space: 3-4 layers, 1-55 neurons. GA: different width per layer. CMA-ES: one
+  width for all layers (documented asymmetry).
+
+SEED / PMS_SEED: unset = stochastic; set integer = reproducible runs.
+
+
+================================================================================
+6. ERROR METRICS — WHAT TO USE WHEN
+================================================================================
+
+MAPE (Mean Absolute Percentage Error)
+  Plain: "On average, how many PERCENT wrong is the prediction?"
+  Formula idea: mean of |true - pred| / |true|, times 100.
+  Use for: main comparison table, supervisor headline, legacy Octave alignment.
+  Weakness: tiny true T makes percent error look huge.
+
+sMAPE (Symmetric MAPE) — see section 7 below.
+
+MAE: average error in milliseconds. "How many ms off on average?"
+
+RMSE: like MAE but punishes BIG errors much harder (square then sqrt). Use when
+  saturated / huge T mistakes matter. GA vs CMA-ES sometimes differs more on RMSE
+  than on MAPE when MAPE looks tied.
+
+R²: fraction of variance in T explained. Near 1 = strong; near 0 = weak. Good
+  single "how good is the fit?" number alongside MAPE.
+
+Practical: table = MAPE + R²; discussion = RMSE; regime splits = MAPE on saturated
+  vs unsaturated subsets.
+
+
+================================================================================
+7. sMAPE — WHAT IT IS AND WHAT IT FIXES
+================================================================================
+
+MAPE divides error by TRUE only. If true T is very small, even a modest ms error
+becomes a giant PERCENT — one row can distort the average.
+
+sMAPE uses a symmetric denominator: error is compared to the average of |true| and
+|pred| (both sides), not true alone. Over- and under-predictions are treated more
+evenly. It cannot explode as badly when true is tiny.
+
+In your scripts sMAPE is stored as a fraction in [0,2] and reported on a 0-200%
+scale (same convention across ga/cmaes/pms_kfold).
+
+What it solves: a robustness check on MAPE. If MAPE and sMAPE tell the same story,
+trust MAPE for the paper. If MAPE looks bad but sMAPE reasonable, investigate
+small-T rows (report both; mention sMAPE scale).
+
+When to focus on sMAPE: right-skewed T, many percent-based comparisons, or when
+reviewers question MAPE inflation on low-T grid points.
+
+
+================================================================================
+8. METHOD-BY-METHOD — HOW IT WORKS (VERY SIMPLE)
+================================================================================
+
+--- 8.1 Octave PMS (pms_kfold.py + Docker) ---
+
+What it is: Legacy lab tool. Genetic algorithm in Octave picks neural net shape;
+Levenberg-Marquardt trains weights; runs inside Docker image gkousiou/laboctave.
+
+What it does each fold: Write training CSV (504 rows) to model folder. Run Octave
+"model" (search+train). Run "prediction" on 126 held-out inputs. Python reads
+predictions, clamps tiny negatives to 0, computes MAPE/sMAPE/MAE/RMSE/R².
+
+What it offers: Baseline "how we used to do it." Same outer 5-fold seed 42.
+
+K-fold here: Python loops folds; Octave does NOT implement leave-one-M-out. Inner
+train/medval/val split is INSIDE Octave createmodel.m (not identical to Python
+inner_split byte-for-byte).
+
+Typical results (your logs): pooled MAPE ~13-17% on T targets; NSMKT (~13%) better
+than NSMT (~17%) — K helps legacy path.
+
+Focus metrics: MAPE vs Python; R²; RMSE for tail. Insight: legacy + no log-T pipeline;
+calibration columns matter more than on Python MLP.
+
+--- 8.2 GA-MLP (ga_mlp_runs.py) ---
+
+What it is: Python re-implementation of Octave's GA idea (DEAP): tournament selection,
+crossover, mutation, elitism, ~900 architecture evaluations per fold.
+
+What it does each fold: Split 504 rows into train/medval/val. Loop 900 tries: decode
+chromosome (layers, per-layer neurons, activation) → build MLP → L-BFGS on train →
+fitness = training MSE → medval gate → after GA, pick best on val → predict 126 test.
+
+What it offers: "Is Octave slow/wrong or is GA fine in Python?" Same metrics as Octave
+outer fold.
+
+Typical results: pooled MAPE ~8-12% on many tags; NSMT ~9.3%. Much lower than Octave
+mostly due to log-T + alpha + L-BFGS, not GA vs DEAP trivia.
+
+Focus metrics: MAPE + fold CI; compare eval count 900 vs CMA-ES 200. Insight: search
+paradigm vs Octave; not necessarily better than CMA-ES on MAPE alone.
+
+--- 8.3 CMA-ES-MLP (cmaes_mlp_runs.py) ---
+
+What it is: Different SEARCH (evolution strategy), same MLP trainer and preprocessing.
+
+What it does each fold: Same outer/inner split as GA. ~200 tries: sample 3 numbers in
+[0,1] → decode to layers, neurons (uniform all layers), activation → train/score like
+GA → val pick → 126 test.
+
+What it offers: "Is GA the wrong search tool?" Same MAPE band with fewer tries; often
+better RMSE in your NSMT logs (~4.5k vs ~5.8k ms mean fold RMSE).
+
+Focus metrics: MAPE + RMSE + budget (200 vs 900). Insight: efficiency and tail error,
+not a huge MAPE win.
+
+--- 8.4 Linear regression (planned baseline) ---
+
+What it is: T ≈ a*S + b*N + c*M + constant. No layers, no search.
+
+What it does: Fit coefficients on training fold only; predict test fold.
+
+What it offers: Simplest serious floor. If MLP/XGBoost barely beat this, complexity
+is weak.
+
+Focus: MAPE and R². Expect worse than ~9% unless surface were nearly linear.
+
+K-fold: same 5 folds; no architecture search; fast.
+
+--- 8.5 XGBoost (planned baseline) ---
+
+What it is: Ensemble of decision trees (gradient boosting). Standard for small tables.
+
+What it does: Uses columns S,N,M (optional K); learns splits like "N > 5000";
+no neuron/layer search.
+
+What it offers: "Do we need evolved MLP at all?" Feature importance (which column
+matters). Optional monotonic constraints later (N up ⇒ T not down).
+
+Focus: MAPE vs MLP; RMSE; saturated-only MAPE. Predict ~8-10%, maybe ~1-2 pts better
+than MLP — not Octave-like ~17%.
+
+K-fold: same 5 folds; different model, same test rows.
+
+--- 8.6 What we are NOT prioritizing now ---
+
+Optuna (auto hyperparameter tuning), TabPFN (pre-trained table model), Gaussian
+processes (uncertainty bands): optional later; not needed for core GA vs CMA-ES vs
+Octave story.
+
+
+================================================================================
+9. RESULTS STORY (YOUR LOGS, PLAIN)
+================================================================================
+
+Octave: ~13-17% MAPE on T; NSMKT beats NSMT (K helps).
+
+Python GA/CMA-ES: ~8-12% MAPE on most tags; NSMT ~9% vs ~8.9% (similar).
+
+Extra inputs K,U,B: big effect on Octave MAPE; small on Python MAPE because MLP on
+(S,N,M) + log-T already captures much of the physics (K redundant with N and S).
+
+~9% is not a coded minimum — high R² (~0.95+) means the Python recipe is already
+good on this grid. Octave ~17% shows a different pipeline ceiling.
+
+GA vs CMA-ES: compare budget and RMSE, not only MAPE.
+
+
+================================================================================
+10. SATURATED / UNSATURATED (MEASUREMENT)
+================================================================================
+
+Label each row: saturated if ceil(N/S) > M.
+
+After you have test predictions (630 rows), compute MAPE three ways: all, unsaturated
+only, saturated only — for EACH method. Insight: where error lives; whether K helps
+on hard rows. Does not require separate training at first (evaluation split only).
+
+
+================================================================================
+11. LEAVE-ONE-M-OUT (CAPACITY GENERALIZATION)
+================================================================================
+
+Not leave-one-row. Hold out one M value (e.g. M=32): train on all rows with M != 32,
+test only M = 32. Repeat for other M if needed.
+
+Is it extrapolation? Yes — in the sense of "never saw this container cap in training."
+It is NOT extrapolation beyond measured N/S grid; M=32 test rows are still from your
+lab grid.
+
+Legacy Octave pms_kfold: standard 5-fold shuffle — M values are MIXED in train and
+test each fold. That is NOT leave-one-M-out. M=32 rows usually appear in training
+in 4 of 5 folds.
+
+See APPENDIX B for planned dataset scripts (description only until implemented).
+
+
+================================================================================
+APPENDIX A — PLACEHOLDER FOR FUTURE PARAGRAPHS
+================================================================================
+
+(Add new dated notes below this line.)
+
+
+================================================================================
+APPENDIX B — PLANNED SCRIPTS (DESIGN NOTES, 2026-10-05)
+================================================================================
+
+B1) Saturated / unsaturated dataset helper (NOT YET IMPLEMENTED)
+  - Possible without new measurements: from any master_dataset*.csv (S,N,M,...,T),
+    compute K and saturated flag (0/1).
+  - Outputs (user chooses):
+      (1) master_*_tagged.csv — same rows + columns K, saturated (for analysis).
+      (2) Optional train/eval exports: unsaturated_only.csv, saturated_only.csv
+          (630 rows split into two files for training-only-on-saturated experiments).
+  - For DEFAULT k-fold runs you keep full CSV; after run, tag predictions for MAPE
+    by regime (regime script on pooled preds). Separate CSVs only if you explicitly
+    want to TRAIN on one regime only.
+
+B2) Leave-one-M-out split generator (NOT YET IMPLEMENTED)
+  - Input: master_dataset.csv (or NSMT variant).
+  - For each M_hold in {2,8,14,20,26,32} (or user list):
+      train_M_neq_<M_hold>.csv  — all columns, rows where M != M_hold
+      test_M_eq_<M_hold>.csv    — all columns, rows where M == M_hold
+  - 105 test rows per M_hold (21 N × 5 S per M level in full grid).
+  - Existing ga_mlp / cmaes / Octave scripts expect 5-fold, not this split — you
+    would run a dedicated harness OR temporarily point DATA_FILE at train CSV and
+    evaluate on test CSV (custom loop). Feasible; not plug-and-play without a small
+    runner script.
+
+End of memo.

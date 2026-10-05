@@ -415,6 +415,7 @@ def run_ga_kfold():
     fold_results = []
     all_actuals  = []   # every held-out row's true T, pooled across folds
     all_preds    = []   # every held-out row's prediction, pooled across folds
+    heldout_parts = []  # per-row test predictions (like pms_kfold heldout CSVs)
 
 
     for fold_idx, (train_index, test_index) in enumerate(kf.split(X), start=1):
@@ -490,6 +491,11 @@ def run_ga_kfold():
         })
         all_actuals.extend(y_test_fold.tolist())
         all_preds.extend(preds.tolist())
+
+        block = df.iloc[test_index].copy()
+        block["prediction"] = preds
+        block["fold"] = fold_idx
+        heldout_parts.append(block)
 
 
     if not fold_results:
@@ -609,6 +615,14 @@ def run_ga_kfold():
         index=False
     )
 
+    if heldout_parts:
+        held_path = os.path.join(
+            RESULTS_DIR, f"heldout_predictions_{MODEL_TAG}_ga.csv"
+        )
+        pd.concat(heldout_parts, ignore_index=True).to_csv(
+            held_path, index=False, header=False
+        )
+        print(f"Held-out predictions : {held_path}")
 
     print(f"Log : {LOG_FILE}")
     print(f"CSV : {os.path.join(RESULTS_DIR, f'kfold_results_{MODEL_TAG}_ga.csv')}")
