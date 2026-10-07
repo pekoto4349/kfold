@@ -1,7 +1,7 @@
 PHD FaaS SURROGATE EXPERIMENT — WORKING MEMO
 ============================================
 Purpose: plain-language reference to carry into new chats. Append new sections at the
-end under "APPENDIX" with date lines. Last updated: 2026-10-07 (APPENDIX G added).
+end under "APPENDIX" with date lines. Last updated: 2026-10-07 (CHAPTER 12 added).
 
 --- HOW TO USE THIS FILE ---
 - Read top-to-bottom for the full story once.
@@ -290,6 +290,158 @@ test each fold. That is NOT leave-one-M-out. M=32 rows usually appear in trainin
 in 4 of 5 folds.
 
 See APPENDIX B for planned dataset scripts (description only until implemented).
+
+
+================================================================================
+12. VALIDATION PER-LINE ERRORS AND RECENT RUNNER CHANGES (2026-10-07)
+================================================================================
+
+This is a main memo chapter (not an appendix). It documents code and workflow changes
+added after the GA/CMA-ES appendices (E–G). Same teaching style: PLAIN WALKTHROUGH,
+then GOING DEEPER. Read Appendix E3 first if you forgot train / medval / val / test.
+
+
+--- 12.1. Why we added per-row validation output ---
+
+PLAIN WALKTHROUGH
+
+The headline MAPE from each fold is one number. It does not tell you whether errors
+cluster on certain S, N, or M values, or in saturated vs unsaturated rows. For the
+next research step — routing or specialist models (sat vs unsat, scale splits) — you
+need a table: each validation row, its inputs, true T, predicted T, and error.
+
+Validation rows are the ~30% slice of the fold's inner 504 that picks the winning
+architecture (lowest val MAPE among nets that passed the medval gate). They are not
+the outer 126 test rows. Val errors describe where the **selected** net looked good or
+bad while you were choosing it. Outer test errors (held-out CSV) remain the honest
+score for the thesis; val per-line is for **diagnosis and router design**.
+
+GOING DEEPER
+
+Do not tune router thresholds on val per-line and then report val MAPE as proof — that
+reuses the selection set. Use val to **hypothesize** splits; confirm on held-out test
+(or a frozen outer protocol) before claiming improvement.
+
+
+--- 12.2. What ga_mlp_runs.py and cmaes_mlp_runs.py do now ---
+
+PLAIN WALKTHROUGH
+
+Each outer fold still runs the same protocol: search on inner train (fitness = training
+MSE), medval gate (< 20% MAPE to save a candidate), val pick (best saved net on val
+MAPE), then report MAPE on the outer 126 test rows.
+
+After the search finishes for that fold, the script takes the **val-winning** model and
+predicts every inner **val** row again. For each row it writes:
+
+  • All input columns from the dataset (first three named S, N, M in the export).
+  • True T (last column of the raw CSV row).
+  • prediction (clamped to ≥ 0, same as test).
+  • abs_err, pct_err (absolute percent error), signed_pct_err (over/under-predict).
+  • K = ceil(N/S), regime_sat (1 if K > M, else 0).
+  • fold (1..5).
+
+Files are written once per full run, pooled over all folds:
+
+  ga_results/val_per_line_{MODEL_TAG}_ga.csv
+  cmaes_results/val_per_line_{MODEL_TAG}_cmaes.csv
+
+These files have a **header row** (unlike heldout_predictions_*.csv).
+
+GOING DEEPER
+
+Implementation helpers (both runners):
+
+  inner_split_indices(train_index, seed) — same train/medval/val split as
+  inner_split(), but returns **global row indices** into the 630-row dataframe so val
+  rows align with S, N, M, T in the CSV.
+
+  val_per_line_block() — builds one fold's block of val rows with error columns.
+
+  val_per_line_column_names() — header for the export.
+
+The main 5-fold loop uses index-based splitting; inner_split() is unchanged for
+ga_mlp_m_out.py / cmaes_mlp_m_out.py imports.
+
+
+--- 12.3. Where errors appear — and where they do not ---
+
+PLAIN WALKTHROUGH
+
+| Output | Per-row val errors? |
+|--------|---------------------|
+| val_per_line_{TAG}_ga.csv / _cmaes.csv | **Yes** — full table |
+| experiment_logs_{TAG}_ga.txt / _cmaes.txt | **No** — fold-level outer test metrics only |
+| kfold_results_{TAG}_ga.csv / _cmaes.csv | **No** — one summary row per fold |
+| heldout_predictions_{TAG}_*.csv | **No** — inputs, T, prediction, fold (no error cols yet) |
+
+You must **re-run** GA and CMA-ES after pulling this change; old runs do not create
+val_per_line files.
+
+GOING DEEPER
+
+regime_from_heldout.py still consumes held-out prediction CSVs for sat/unsat **test**
+MAPE. It does not read val_per_line files. A future script can aggregate val_per_line
+by regime_sat or bins of M for exploratory tables.
+
+
+--- 12.4. How to use the CSV to ask "which knob hurts?" ---
+
+PLAIN WALKTHROUGH
+
+Load val_per_line_*.csv in pandas or Excel. Sort by pct_err descending — worst rows
+first. Group by regime_sat and compare mean pct_err (sat vs unsat). Bin M or K and
+compare medians. Merge GA and CMA files on (fold, S, N, M) to see which method fails
+on the same configuration.
+
+Remember: patterns on **val** suggest where to **try** a routed model; patterns on
+**held-out** (after you add error columns or post-process) support **claims**.
+
+GOING DEEPER
+
+(S, N, M) are correlated in the grid; a spike at one M may be confounded with N/S.
+Use K and regime_sat together with marginals. Optional next step: error meta-model on
+val only (XGBoost on inputs predicting log |pct_err|) to rank features — exploratory,
+not a replacement for the surrogate.
+
+
+--- 12.5. Planned pipeline (not implemented in this chapter) ---
+
+PLAIN WALKTHROUGH
+
+The agreed sequence after this chapter: (1) val + test per-line atlases, (2) sat/unsat
+and bucket summaries, (3) frozen router spec (sat/unsat, maybe N threshold), (4) per-
+route specialists (XGBoost prototype, then GA/CMA if enough data), (5) wrapper that
+routes (S,N,M) to the right model at predict time. This chapter completes step (1)
+for **validation** on GA and CMA-ES only.
+
+GOING DEEPER
+
+Held-out per-line with the same error columns can be done without retraining by post-
+processing heldout_predictions_*.csv. Octave val parity is optional if PMS is not the
+focus of routing.
+
+
+--- 12.6. Git push on Zscaler networks ---
+
+PLAIN WALKTHROUGH
+
+Corporate Zscaler often blocks normal `git push` (HTTP 403 on git-receive-pack) and
+sometimes blocks large GitHub Contents API PUTs. Small Git Database API calls
+(blobs / trees / commits / update ref) may still work with the Zscaler CA bundle.
+
+Repo helpers (kfold root):
+
+  github_api_push.py — fast-forward one local commit to origin/master via API.
+  push-when-off-zscaler.sh — tries git push, then falls back to github_api_push.py.
+
+Requires git credential for github.com and CA file ~/.ca-bundle-with-zscaler.crt.
+
+GOING DEEPER
+
+After an API push, run `git fetch origin` and `git reset --hard origin/master` if
+local and remote commit hashes differ but trees match. Prefer normal git push when off
+VPN.
 
 
 ================================================================================

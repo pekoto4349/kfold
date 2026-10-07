@@ -179,6 +179,60 @@ def inner_split(X, y, seed):
     return X_train, y_train, X_medval, y_medval, X_val, y_val
 
 
+def inner_split_indices(train_index, seed):
+    """
+    Same split as inner_split, but returns global row indices into the full dataset.
+    """
+    train_index = np.asarray(train_index)
+    idx_tm, idx_val = train_test_split(
+        train_index, test_size=VAL_RATIO_OF_80, random_state=seed
+    )
+    medval_frac_of_rest = MEDVAL_RATIO_OF_80 / (1.0 - VAL_RATIO_OF_80)
+    idx_train, idx_medval = train_test_split(
+        idx_tm, test_size=medval_frac_of_rest, random_state=seed
+    )
+    return idx_train, idx_medval, idx_val
+
+
+def val_per_line_block(df, idx_val, val_preds, fold_idx):
+    """Per-row val diagnostics for the architecture selected on val MAPE."""
+    block = df.iloc[idx_val].copy()
+    val_preds = np.maximum(0.0, np.asarray(val_preds, float))
+    t_true = block.iloc[:, -1].values.astype(float)
+    block["prediction"] = val_preds
+    abs_err = np.abs(t_true - val_preds)
+    block["abs_err"] = abs_err
+    block["pct_err"] = abs_err / np.maximum(np.abs(t_true), 1e-8) * 100.0
+    block["signed_pct_err"] = (
+        (val_preds - t_true) / np.maximum(np.abs(t_true), 1e-8) * 100.0
+    )
+    s = block.iloc[:, 0].values.astype(float)
+    n = block.iloc[:, 1].values.astype(float)
+    m = block.iloc[:, 2].values.astype(float)
+    k = np.ceil(n / np.maximum(s, 1e-8))
+    block["K"] = k
+    block["regime_sat"] = (k > m).astype(int)
+    block["fold"] = fold_idx
+    return block
+
+
+def val_per_line_column_names(num_inputs):
+    names = []
+    for i in range(num_inputs):
+        names.append(["S", "N", "M"][i] if i < 3 else f"x{i}")
+    names.append("T")
+    names += [
+        "prediction",
+        "abs_err",
+        "pct_err",
+        "signed_pct_err",
+        "K",
+        "regime_sat",
+        "fold",
+    ]
+    return names
+
+
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -416,6 +470,7 @@ def run_ga_kfold():
     all_actuals  = []   # every held-out row's true T, pooled across folds
     all_preds    = []   # every held-out row's prediction, pooled across folds
     heldout_parts = []  # per-row test predictions (like pms_kfold heldout CSVs)
+    val_parts = []     # per-row val errors (selected net; used to pick arch)
 
 
     for fold_idx, (train_index, test_index) in enumerate(kf.split(X), start=1):
@@ -424,14 +479,13 @@ def run_ga_kfold():
         print("=" * 70)
 
 
-        X_tr_fold, X_test_fold = X[train_index], X[test_index]
-        y_tr_fold, y_test_fold = y[train_index], y[test_index]
+        X_test_fold = X[test_index]
+        y_test_fold = y[test_index]
 
-
-        # ── split the fold's 80% into train/medval/val for the search ────
-        # (NO extra finalval — the held-out 20% below is the reported set.)
-        (X_train, y_train, X_medval, y_medval,
-         X_val, y_val) = inner_split(X_tr_fold, y_tr_fold, SEED)
+        idx_train, idx_medval, idx_val = inner_split_indices(train_index, SEED)
+        X_train, y_train = X[idx_train], y[idx_train]
+        X_medval, y_medval = X[idx_medval], y[idx_medval]
+        X_val, y_val = X[idx_val], y[idx_val]
 
 
         print("  [GA] Evolving architecture (fitness = training MSE)...")
@@ -449,6 +503,10 @@ def run_ga_kfold():
               f"{n_layers} layers, widths {best_widths}, act={best_act}")
         print(f"  Candidates saved (medval MAPE < {MAPE_GATE:.0f}%): {num_saved}")
 
+        val_preds = best_model.predict(X_val)
+        val_parts.append(
+            val_per_line_block(df, idx_val, val_preds, fold_idx)
+        )
 
         # ── evaluate on the fold's held-out 20% (the reported MAPE) ─────
         preds = best_model.predict(X_test_fold)
@@ -623,6 +681,15 @@ def run_ga_kfold():
             held_path, index=False, header=False
         )
         print(f"Held-out predictions : {held_path}")
+
+    if val_parts:
+        val_path = os.path.join(
+            RESULTS_DIR, f"val_per_line_{MODEL_TAG}_ga.csv"
+        )
+        val_df = pd.concat(val_parts, ignore_index=True)
+        val_df.columns = val_per_line_column_names(num_inputs)
+        val_df.to_csv(val_path, index=False)
+        print(f"Val per-line errors   : {val_path}")
 
     print(f"Log : {LOG_FILE}")
     print(f"CSV : {os.path.join(RESULTS_DIR, f'kfold_results_{MODEL_TAG}_ga.csv')}")
