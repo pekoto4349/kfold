@@ -30,3 +30,112 @@ AVG MAE   : 11177.78 ms  (std ± 2020.12 ms  |  95% CI ± 2507.91 ms  → [8669.
 AVG RMSE  : 20939.46 ms  (std ± 6554.59 ms  |  95% CI ± 8137.29 ms  → [12802.17 ms, 29076.75 ms])
 AVG R2    : 0.4753  (std ± 0.0692  |  95% CI ± 0.0859  → [0.3894, 0.5612])
 ======================================================================
+
+======================================================================
+RUN TIMESTAMP : 2026-10-07 20:33:40
+DATA FILE     : master_dataset_NSMT.csv
+MODEL         : Ordinary least squares (sklearn LinearRegression)
+TRAINER       : one straight line, fit on inner train only
+CONFIG        : 3 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMT
+SCALING       : same as the nets. log1p(time), then MinMax [-1, 1] on inputs and on the logged time. Fit on the training rows only. Guesses are turned back into milliseconds before MAPE, sMAPE, MAE, RMSE, and the per-line errors. Negatives clamped to 0. Printed coefficients are in the compressed space, not milliseconds per unit. A positive coefficient still means time grows with that knob.
+PROTOCOL      : same outer 5-fold (seed 42) and same inner train/medval/val cut as ga_mlp_runs.py. Fit on train. Medval only sets passed_gate (<20% in milliseconds), it does not drop the line. Val is the per-line file. The held-out 20% is the reported MAPE.
+SEED          : 42
+METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds | MAPE in %, SMAPE on 0..200% scale
+──────────────────────────────────────────────────────────────────────
+  Fold 1: intercept=0.0670608  S=-0.149954, N=0.422059, M=-0.144282  medvalMAPE=40.65%  gate=0  MAPE=62.87%  SMAPE=42.74%  MAE=10931.9ms  RMSE=25929.4ms  R2=0.4734  n=126  bad=8
+  Fold 2: intercept=0.0426884  S=-0.152181, N=0.47953, M=-0.153201  medvalMAPE=49.44%  gate=0  MAPE=59.22%  SMAPE=43.50%  MAE=9020.1ms  RMSE=16411.0ms  R2=0.4424  n=126  bad=6
+  Fold 3: intercept=0.116835  S=-0.159478, N=0.476357, M=-0.162032  medvalMAPE=57.72%  gate=0  MAPE=45.51%  SMAPE=35.95%  MAE=6584.5ms  RMSE=14490.3ms  R2=0.4381  n=126  bad=4
+  Fold 4: intercept=0.114846  S=-0.141156, N=0.475958, M=-0.174081  medvalMAPE=57.22%  gate=0  MAPE=46.03%  SMAPE=36.81%  MAE=8131.4ms  RMSE=19186.8ms  R2=0.6218  n=126  bad=3
+  Fold 5: intercept=0.112638  S=-0.158064, N=0.471876, M=-0.168601  medvalMAPE=47.88%  gate=0  MAPE=59.28%  SMAPE=43.10%  MAE=10771.8ms  RMSE=23902.9ms  R2=0.5284  n=126  bad=5
+──────────────────────────────────────────────────────────────────────
+POOLED over all 630 rows:
+  POOL MAPE : 54.58%
+  POOL SMAPE: 40.42%
+  POOL MAE  : 9087.9 ms
+  POOL RMSE : 20450.5 ms
+  POOL R2   : 0.5196
+──────────────────────────────────────────────────────────────────────
+MEAN ± 95% t-CI ACROSS 5 FOLDS:
+AVG MAPE  : 54.58%  (std ± 8.18%  |  95% CI ± 10.16%  → [44.42%, 64.74%])
+AVG SMAPE : 40.42%  (std ± 3.71%  |  95% CI ± 4.61%  → [35.81%, 45.03%])
+AVG MAE   : 9087.93 ms  (std ± 1831.83 ms  |  95% CI ± 2274.15 ms  → [6813.77 ms, 11362.08 ms])
+AVG RMSE  : 19984.09 ms  (std ± 4855.08 ms  |  95% CI ± 6027.41 ms  → [13956.68 ms, 26011.50 ms])
+AVG R2    : 0.5008  (std ± 0.0766  |  95% CI ± 0.0951  → [0.4057, 0.5959])
+──────────────────────────────────────────────────────────────────────
+GROUP AVERAGES, held-out exam (each job once).
+MAPE is the average percent off. mean_ms is the average millisecond
+miss, which is not a percent. mean_signed_pct is too-high minus too-low,
+so it is not MAPE. median_pct is the middle job.
+  all=all  n=630  MAPE=54.58%  median_pct=31.24%  mean_ms=9087.9  mean_signed_pct=22.10
+  regime=saturated  n=559  MAPE=36.87%  median_pct=29.50%  mean_ms=10047.2  mean_signed_pct=3.09
+  regime=unsaturated  n=71  MAPE=194.04%  median_pct=73.88%  mean_ms=1535.2  mean_signed_pct=171.77
+  S=20  n=126  MAPE=46.42%  median_pct=29.29%  mean_ms=17882.9  mean_signed_pct=1.46
+  S=40  n=126  MAPE=63.31%  median_pct=34.80%  mean_ms=10669.3  mean_signed_pct=36.91
+  S=60  n=126  MAPE=64.40%  median_pct=31.03%  mean_ms=7320.0  mean_signed_pct=39.30
+  S=80  n=126  MAPE=57.97%  median_pct=31.23%  mean_ms=5369.8  mean_signed_pct=29.36
+  S=100  n=126  MAPE=40.82%  median_pct=31.60%  mean_ms=4197.6  mean_signed_pct=3.49
+  N=100  n=30  MAPE=419.64%  median_pct=407.66%  mean_ms=2433.6  mean_signed_pct=419.64
+  N=600  n=30  MAPE=68.06%  median_pct=46.94%  mean_ms=1282.4  mean_signed_pct=57.24
+  N=1100  n=30  MAPE=30.27%  median_pct=24.63%  mean_ms=1744.9  mean_signed_pct=-1.03
+  N=1600  n=30  MAPE=27.07%  median_pct=24.20%  mean_ms=2368.2  mean_signed_pct=-14.69
+  N=2100  n=30  MAPE=31.58%  median_pct=29.96%  mean_ms=3696.0  mean_signed_pct=-23.46
+  N=2600  n=30  MAPE=32.74%  median_pct=32.07%  mean_ms=4637.9  mean_signed_pct=-26.30
+  N=3100  n=30  MAPE=33.25%  median_pct=31.27%  mean_ms=5742.8  mean_signed_pct=-29.05
+  N=3600  n=30  MAPE=30.90%  median_pct=25.74%  mean_ms=6508.0  mean_signed_pct=-25.06
+  N=4100  n=30  MAPE=32.76%  median_pct=36.27%  mean_ms=7490.4  mean_signed_pct=-26.96
+  N=4600  n=30  MAPE=27.96%  median_pct=21.88%  mean_ms=7582.6  mean_signed_pct=-19.60
+  N=5100  n=30  MAPE=28.11%  median_pct=28.70%  mean_ms=8394.2  mean_signed_pct=-14.65
+  N=5600  n=30  MAPE=27.57%  median_pct=26.27%  mean_ms=9458.0  mean_signed_pct=-11.09
+  N=6100  n=30  MAPE=23.34%  median_pct=18.93%  mean_ms=10360.2  mean_signed_pct=-11.97
+  N=6600  n=30  MAPE=22.05%  median_pct=20.77%  mean_ms=7589.4  mean_signed_pct=-4.76
+  N=7100  n=30  MAPE=23.47%  median_pct=20.60%  mean_ms=9533.8  mean_signed_pct=-1.95
+  N=7600  n=30  MAPE=26.25%  median_pct=28.13%  mean_ms=10852.3  mean_signed_pct=3.94
+  N=8100  n=30  MAPE=29.34%  median_pct=28.38%  mean_ms=12197.7  mean_signed_pct=11.89
+  N=8600  n=30  MAPE=40.25%  median_pct=37.29%  mean_ms=15153.4  mean_signed_pct=25.49
+  N=9100  n=30  MAPE=51.09%  median_pct=50.18%  mean_ms=18530.0  mean_signed_pct=35.30
+  N=9600  n=30  MAPE=69.79%  median_pct=64.48%  mean_ms=25176.0  mean_signed_pct=54.26
+  N=10100  n=30  MAPE=70.72%  median_pct=65.68%  mean_ms=20114.8  mean_signed_pct=66.99
+  M=2  n=105  MAPE=75.23%  median_pct=51.52%  mean_ms=30217.1  mean_signed_pct=-14.60
+  M=8  n=105  MAPE=69.95%  median_pct=29.42%  mean_ms=6502.5  mean_signed_pct=68.51
+  M=14  n=105  MAPE=56.91%  median_pct=26.92%  mean_ms=6864.6  mean_signed_pct=46.95
+  M=20  n=105  MAPE=45.14%  median_pct=22.70%  mean_ms=4219.2  mean_signed_pct=29.09
+  M=26  n=105  MAPE=41.21%  median_pct=25.97%  mean_ms=3663.0  mean_signed_pct=15.28
+  M=32  n=105  MAPE=39.06%  median_pct=32.95%  mean_ms=3061.2  mean_signed_pct=-12.61
+──────────────────────────────────────────────────────────────────────
+GROUP AVERAGES, val (not the exam, some jobs repeat).
+  all=all  n=760  MAPE=58.29%  median_pct=33.90%  mean_ms=10737.3  mean_signed_pct=22.91
+  regime=saturated  n=687  MAPE=38.73%  median_pct=31.47%  mean_ms=11692.8  mean_signed_pct=1.94
+  regime=unsaturated  n=73  MAPE=242.36%  median_pct=100.41%  mean_ms=1744.9  mean_signed_pct=220.30
+  S=20  n=155  MAPE=60.41%  median_pct=31.09%  mean_ms=22963.1  mean_signed_pct=11.62
+  S=40  n=147  MAPE=51.62%  median_pct=37.18%  mean_ms=12108.1  mean_signed_pct=16.96
+  S=60  n=153  MAPE=69.57%  median_pct=36.28%  mean_ms=8023.2  mean_signed_pct=42.62
+  S=80  n=154  MAPE=66.95%  median_pct=32.23%  mean_ms=5638.5  mean_signed_pct=39.21
+  S=100  n=151  MAPE=42.34%  median_pct=32.46%  mean_ms=4803.3  mean_signed_pct=3.70
+  N=100  n=39  MAPE=467.98%  median_pct=428.19%  mean_ms=2849.1  mean_signed_pct=467.98
+  N=600  n=22  MAPE=77.45%  median_pct=57.88%  mean_ms=1431.9  mean_signed_pct=61.57
+  N=1100  n=37  MAPE=27.27%  median_pct=23.46%  mean_ms=1431.3  mean_signed_pct=2.07
+  N=1600  n=32  MAPE=26.69%  median_pct=26.63%  mean_ms=2570.4  mean_signed_pct=-18.76
+  N=2100  n=29  MAPE=35.93%  median_pct=33.19%  mean_ms=5830.6  mean_signed_pct=-28.58
+  N=2600  n=40  MAPE=41.08%  median_pct=40.90%  mean_ms=7929.9  mean_signed_pct=-38.36
+  N=3100  n=43  MAPE=40.70%  median_pct=38.21%  mean_ms=8233.5  mean_signed_pct=-38.51
+  N=3600  n=32  MAPE=34.25%  median_pct=34.77%  mean_ms=7037.2  mean_signed_pct=-28.54
+  N=4100  n=31  MAPE=38.70%  median_pct=39.94%  mean_ms=13033.3  mean_signed_pct=-36.40
+  N=4600  n=23  MAPE=22.42%  median_pct=15.13%  mean_ms=6823.1  mean_signed_pct=-13.24
+  N=5100  n=31  MAPE=26.67%  median_pct=19.47%  mean_ms=9049.1  mean_signed_pct=-9.28
+  N=5600  n=34  MAPE=27.26%  median_pct=22.75%  mean_ms=10093.1  mean_signed_pct=-10.85
+  N=6100  n=26  MAPE=16.68%  median_pct=12.87%  mean_ms=4741.2  mean_signed_pct=-10.75
+  N=6600  n=33  MAPE=19.82%  median_pct=19.87%  mean_ms=5345.1  mean_signed_pct=-4.56
+  N=7100  n=42  MAPE=24.63%  median_pct=24.44%  mean_ms=10378.1  mean_signed_pct=-7.80
+  N=7600  n=27  MAPE=23.53%  median_pct=19.17%  mean_ms=6249.9  mean_signed_pct=2.83
+  N=8100  n=33  MAPE=26.74%  median_pct=25.31%  mean_ms=14660.8  mean_signed_pct=3.49
+  N=8600  n=64  MAPE=43.46%  median_pct=39.42%  mean_ms=16466.4  mean_signed_pct=26.77
+  N=9100  n=48  MAPE=42.91%  median_pct=36.70%  mean_ms=20848.7  mean_signed_pct=15.39
+  N=9600  n=49  MAPE=50.35%  median_pct=43.83%  mean_ms=30268.2  mean_signed_pct=23.00
+  N=10100  n=45  MAPE=56.25%  median_pct=29.84%  mean_ms=15700.4  mean_signed_pct=51.98
+  M=2  n=170  MAPE=82.35%  median_pct=49.68%  mean_ms=31541.7  mean_signed_pct=-4.56
+  M=8  n=95  MAPE=84.58%  median_pct=26.92%  mean_ms=3535.4  mean_signed_pct=83.48
+  M=14  n=113  MAPE=46.93%  median_pct=20.95%  mean_ms=5957.5  mean_signed_pct=39.03
+  M=20  n=126  MAPE=49.21%  median_pct=29.78%  mean_ms=6748.1  mean_signed_pct=35.98
+  M=26  n=113  MAPE=49.21%  median_pct=23.78%  mean_ms=4157.4  mean_signed_pct=33.50
+  M=32  n=143  MAPE=36.36%  median_pct=31.50%  mean_ms=3280.8  mean_signed_pct=-17.28
+======================================================================

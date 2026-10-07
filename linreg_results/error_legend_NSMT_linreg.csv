@@ -1,0 +1,12 @@
+name,is_this_mape,meaning
+mape_pct,yes,Average percent off for that group. Always positive. This is MAPE. 10 means the jobs in the group were 10% off on average.
+median_abs_pct_err,no,"Percent off of the middle job. Half the jobs are closer than this, half are worse. One disaster moves MAPE a lot and barely moves this."
+mean_abs_err_ms,no,Average miss in milliseconds. A 1000 ms miss counts the same on a short job and a long job. MAPE would call the short job much worse.
+median_abs_err_ms,no,Miss in milliseconds of the middle job. Not a percent.
+mean_signed_pct_err,no,"Average percent with a sign. Positive means the guesses were too high. Too-high and too-low cancel, so this can look small when MAPE is large."
+median_signed_pct_err,no,Signed percent of the middle job. Positive means that guess was too high.
+abs_err,no,"One job, milliseconds off. The average of this column is mean_abs_err_ms."
+abs_pct_err,yes_for_one_job,"One job, percent off, always positive. The average of this column is mape_pct."
+signed_pct_err,no,"One job, percent with a sign. Positive means this guess was too high. MAPE uses the absolute value so the sign is dropped."
+avg_pct_err_same_S / _N / _M / _regime,yes_for_that_group,"Written on every per-line row. MAPE of the jobs that share that S, or that N, or that M, or that saturated/unsaturated label."
+avg_ms_err_same_S / _N / _M / _regime,no,Written on every per-line row. Average millisecond miss of the jobs that share that knob. Not a percent.

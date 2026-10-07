@@ -2,22 +2,22 @@ Regime analysis: linreg_NSMT
 Rows total: 630
 
 OVERALL
-  MAPE  120.33%
-  SMAPE 74.20%
-  MAE   11177.8 ms
-  RMSE  21744.7 ms
-  R2    0.4568
+  MAPE  54.58%
+  SMAPE 40.42%
+  MAE   9087.9 ms
+  RMSE  20450.5 ms
+  R2    0.5196
 
 SATURATED (K > M), n=559
-  MAPE  81.77%
-  SMAPE 60.88%
-  MAE   12134.1 ms
-  RMSE  22995.7 ms
-  R2    0.4298
+  MAPE  36.87%
+  SMAPE 35.87%
+  MAE   10047.2 ms
+  RMSE  21700.1 ms
+  R2    0.4922
 
 UNSATURATED (K <= M), n=71
-  MAPE  423.89%
-  SMAPE 179.12%
-  MAE   3648.8 ms
-  RMSE  5672.2 ms
-  R2    -18.8143
+  MAPE  194.04%
+  SMAPE 76.25%
+  MAE   1535.2 ms
+  RMSE  1876.6 ms
+  R2    -1.1688

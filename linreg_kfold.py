@@ -7,10 +7,19 @@ when PMS_SEED is the same integer.
 
 What this script does NOT copy from the neural search:
   - no architecture search
-  - no log1p target and no MinMax scaling (raw S, N, M and raw T, so the
-    coefficients stay in milliseconds per unit of each knob)
   - the 20% medval check is recorded in passed_gate, and it does not throw
     the fit away. There is only one straight line per fold.
+
+What it copies from ga_mlp_runs.py, including the time preparation:
+  - same outer folds and same inner train / medval / val cut
+  - log1p on the time, then scale the inputs and that logged time to [-1, 1]
+  - those scales are fit on the training rows only
+  - guesses are turned back into milliseconds before any error number
+  - negatives are clamped to 0
+
+The printed coefficients are in that compressed space. A positive coefficient
+still means the time grows when that knob grows. The number is not
+"milliseconds per unit" anymore.
 
 Fit uses the inner train rows only. Medval only answers "was this line under
 20% there?". Val is the per-line diagnostic. The outer 126 rows are the score.
@@ -22,6 +31,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split, KFold
+from sklearn.preprocessing import MinMaxScaler
 
 
 def _env_int(name, default):
@@ -182,6 +192,211 @@ def _require_disjoint(a, b, what):
         raise RuntimeError(f"{what}: {len(overlap)} shared rows")
 
 
+class SameTimePrep:
+    """log1p then MinMax [-1, 1], fit on the training rows only.
+
+    This is the same preparation as ga_mlp_runs.build_mlp. The line is fit
+    in that compressed space. inverse_y turns a guess back into milliseconds.
+    """
+
+    def fit(self, X, y):
+        X = np.asarray(X, float)
+        y = np.asarray(y, float)
+        self.x_scaler = MinMaxScaler(feature_range=(-1, 1)).fit(X)
+        self.y_scaler = MinMaxScaler(feature_range=(-1, 1)).fit(
+            np.log1p(y).reshape(-1, 1)
+        )
+        back = self.inverse_y(self.transform_y(y))
+        if not np.allclose(back, y, rtol=1e-5, atol=1e-3):
+            raise RuntimeError("time preparation did not round-trip on the training rows")
+        return self
+
+    def transform_X(self, X):
+        return self.x_scaler.transform(np.asarray(X, float))
+
+    def transform_y(self, y):
+        logged = np.log1p(np.asarray(y, float)).reshape(-1, 1)
+        return self.y_scaler.transform(logged).ravel()
+
+    def inverse_y(self, y_scaled):
+        logged = self.y_scaler.inverse_transform(
+            np.asarray(y_scaled, float).reshape(-1, 1)
+        ).ravel()
+        return np.expm1(logged)
+
+
+def predict_ms(model, prep, X):
+    """Guess in the compressed space, then milliseconds, then clamp at 0."""
+    return np.maximum(0.0, prep.inverse_y(model.predict(prep.transform_X(X))))
+
+
+def add_group_averages(df):
+    """Repeat the group average on every job row so the per-line file has it.
+
+    avg_pct_err_* is the average percent off (MAPE of that group).
+    avg_ms_err_* is the average miss in milliseconds, which is not a percent.
+    """
+    out = df.copy()
+    regime = np.where(out["regime_sat"].to_numpy() == 1, "saturated", "unsaturated")
+    out["avg_pct_err_all"] = float(out["abs_pct_err"].mean())
+    out["avg_ms_err_all"] = float(out["abs_err"].mean())
+    keys = {
+        "S": out["S"],
+        "N": out["N"],
+        "M": out["M"],
+        "regime": pd.Series(regime, index=out.index),
+    }
+    for name, key in keys.items():
+        out[f"avg_pct_err_same_{name}"] = out.groupby(key, sort=False)["abs_pct_err"].transform("mean")
+        out[f"avg_ms_err_same_{name}"] = out.groupby(key, sort=False)["abs_err"].transform("mean")
+    return out
+
+
+def error_table(block, num_inputs):
+    """One row per job, with the error columns and the group averages."""
+    names = input_names(num_inputs)
+    data = {}
+    for i, name in enumerate(names):
+        data[name] = block.iloc[:, i].to_numpy(float)
+    data["T"] = block.iloc[:, num_inputs].to_numpy(float)
+    data["prediction"] = np.asarray(block["prediction"], float)
+    out = pd.DataFrame(data)
+    out["abs_err"] = np.abs(out["T"] - out["prediction"])
+    out["abs_pct_err"] = out["abs_err"] / np.maximum(np.abs(out["T"]), 1e-8) * 100.0
+    out["signed_pct_err"] = (out["prediction"] - out["T"]) / np.maximum(np.abs(out["T"]), 1e-8) * 100.0
+    k = np.ceil(out["N"] / np.maximum(out["S"], 1e-8))
+    out["K"] = k
+    out["regime_sat"] = (k > out["M"]).astype(int)
+    out["fold"] = np.asarray(block["fold"], int)
+    return add_group_averages(out)
+
+
+def summarize_errors(df_rows, set_name, note):
+    """One row per group. mape_pct is the mean of abs_pct_err for that group."""
+    work = df_rows.copy()
+    work["regime"] = np.where(work["regime_sat"].to_numpy() == 1, "saturated", "unsaturated")
+    rows = []
+
+    def one(group, value, sub):
+        rows.append({
+            "set": set_name,
+            "group": group,
+            "value": value,
+            "n_rows": int(len(sub)),
+            "mape_pct": float(sub["abs_pct_err"].mean()),
+            "median_abs_pct_err": float(sub["abs_pct_err"].median()),
+            "mean_abs_err_ms": float(sub["abs_err"].mean()),
+            "median_abs_err_ms": float(sub["abs_err"].median()),
+            "mean_signed_pct_err": float(sub["signed_pct_err"].mean()),
+            "median_signed_pct_err": float(sub["signed_pct_err"].median()),
+            "note": note,
+        })
+
+    one("all", "all", work)
+    for regime, sub in work.groupby("regime", sort=True):
+        one("regime", regime, sub)
+    for col in ("S", "N", "M"):
+        for val, sub in work.groupby(col, sort=True):
+            shown = int(val) if float(val) == int(float(val)) else val
+            one(col, shown, sub)
+    return pd.DataFrame(rows)
+
+
+def format_avg_lines(avg_df, set_name):
+    lines = []
+    part = avg_df[avg_df["set"] == set_name]
+    for rec in part.itertuples(index=False):
+        lines.append(
+            f"  {rec.group}={rec.value}  n={rec.n_rows}  "
+            f"MAPE={rec.mape_pct:.2f}%  "
+            f"median_pct={rec.median_abs_pct_err:.2f}%  "
+            f"mean_ms={rec.mean_abs_err_ms:.1f}  "
+            f"mean_signed_pct={rec.mean_signed_pct_err:.2f}"
+        )
+    return "\n".join(lines)
+
+
+LEGEND_ROWS = [
+    {
+        "name": "mape_pct",
+        "is_this_mape": "yes",
+        "meaning": (
+            "Average percent off for that group. Always positive. "
+            "This is MAPE. 10 means the jobs in the group were 10% off on average."
+        ),
+    },
+    {
+        "name": "median_abs_pct_err",
+        "is_this_mape": "no",
+        "meaning": (
+            "Percent off of the middle job. Half the jobs are closer than this, "
+            "half are worse. One disaster moves MAPE a lot and barely moves this."
+        ),
+    },
+    {
+        "name": "mean_abs_err_ms",
+        "is_this_mape": "no",
+        "meaning": (
+            "Average miss in milliseconds. A 1000 ms miss counts the same on a "
+            "short job and a long job. MAPE would call the short job much worse."
+        ),
+    },
+    {
+        "name": "median_abs_err_ms",
+        "is_this_mape": "no",
+        "meaning": "Miss in milliseconds of the middle job. Not a percent.",
+    },
+    {
+        "name": "mean_signed_pct_err",
+        "is_this_mape": "no",
+        "meaning": (
+            "Average percent with a sign. Positive means the guesses were too high. "
+            "Too-high and too-low cancel, so this can look small when MAPE is large."
+        ),
+    },
+    {
+        "name": "median_signed_pct_err",
+        "is_this_mape": "no",
+        "meaning": "Signed percent of the middle job. Positive means that guess was too high.",
+    },
+    {
+        "name": "abs_err",
+        "is_this_mape": "no",
+        "meaning": "One job, milliseconds off. The average of this column is mean_abs_err_ms.",
+    },
+    {
+        "name": "abs_pct_err",
+        "is_this_mape": "yes_for_one_job",
+        "meaning": (
+            "One job, percent off, always positive. "
+            "The average of this column is mape_pct."
+        ),
+    },
+    {
+        "name": "signed_pct_err",
+        "is_this_mape": "no",
+        "meaning": (
+            "One job, percent with a sign. Positive means this guess was too high. "
+            "MAPE uses the absolute value so the sign is dropped."
+        ),
+    },
+    {
+        "name": "avg_pct_err_same_S / _N / _M / _regime",
+        "is_this_mape": "yes_for_that_group",
+        "meaning": (
+            "Written on every per-line row. MAPE of the jobs that share that S, "
+            "or that N, or that M, or that saturated/unsaturated label."
+        ),
+    },
+    {
+        "name": "avg_ms_err_same_S / _N / _M / _regime",
+        "is_this_mape": "no",
+        "meaning": (
+            "Written on every per-line row. Average millisecond miss of the jobs "
+            "that share that knob. Not a percent."
+        ),
+    },
+]
 
 
 def run_linreg_kfold():
@@ -197,7 +412,9 @@ def run_linreg_kfold():
     print(f"Dataset  : {DATA_FILE}  ({len(df)} rows, {num_inputs} inputs)")
     print(f"K-folds  : {K_FOLDS}-fold CV (seed {KFOLD_SEED})  |  tag: {MODEL_TAG}")
     print("Search   : none (ordinary least squares, one line per fold)")
-    print("Target   : raw last column, no log. Inputs raw, no MinMax.")
+    print("Target   : same as the nets. log of the time, then scale to [-1, 1],")
+    print("           fit on the training rows only. Errors are in milliseconds")
+    print("           after the guess is turned back.")
     print("Protocol : same outer folds and same inner train/medval/val cut as "
           "ga_mlp_runs.py. The line is fit on train only. Val is the per-line "
           "file. The held-out 20% is the reported MAPE.")
@@ -232,9 +449,11 @@ def run_linreg_kfold():
 
         print(f"  [LINREG] Fitting on {len(y_train)} train rows "
               f"(medval {len(y_medval)}, val {len(y_val)}, test {len(y_test_fold)})...")
+        print("  Time prep: log, then scale to [-1, 1], fit on these train rows only.")
+        prep = SameTimePrep().fit(X_train, y_train)
         try:
             model = LinearRegression(fit_intercept=True)
-            model.fit(X_train, y_train)
+            model.fit(prep.transform_X(X_train), prep.transform_y(y_train))
         except Exception as exc:
             print(f"  WARNING: fit failed this fold ({exc}); skipping.")
             continue
@@ -242,21 +461,23 @@ def run_linreg_kfold():
         coef_txt = ", ".join(
             f"{name}={coef:.6g}" for name, coef in zip(names, model.coef_)
         )
-        print(f"  Line: T ≈ {model.intercept_:.6g} + {coef_txt}")
+        print(f"  Line in compressed space, not milliseconds: "
+              f"intercept={model.intercept_:.6g}, {coef_txt}")
+        print("  A positive coefficient still means time grows with that knob.")
 
-        med_mape = safe_mape(y_medval, model.predict(X_medval))
+        med_mape = safe_mape(y_medval, predict_ms(model, prep, X_medval))
         passed_gate = int(med_mape < MAPE_GATE)
-        print(f"  Medval MAPE (not used to fit): {med_mape:.2f}%  "
+        print(f"  Medval MAPE (not used to fit, back in milliseconds): {med_mape:.2f}%  "
               f"passed_gate={passed_gate}")
 
-        val_preds = model.predict(X_val)
+        val_preds = predict_ms(model, prep, X_val)
         val_parts.append(
             val_per_line_block(
                 df, idx_val, val_preds, fold_idx, passed_gate=passed_gate
             )
         )
 
-        preds = np.maximum(0.0, model.predict(X_test_fold))
+        preds = predict_ms(model, prep, X_test_fold)
         mape_val  = safe_mape(y_test_fold, preds)
         smape_val = _smape(y_test_fold, preds)
         mae_val   = _mae(y_test_fold, preds)
@@ -328,6 +549,33 @@ def run_linreg_kfold():
     pool_rmse   = _rmse(all_actuals, all_preds)
     pool_r2     = safe_r2(all_actuals, all_preds)
 
+    held_detail = None
+    val_detail = None
+    avg_df = None
+    if heldout_parts:
+        held_detail = error_table(
+            pd.concat(heldout_parts, ignore_index=True), num_inputs
+        )
+    if val_parts:
+        val_named = pd.concat(val_parts, ignore_index=True)
+        val_named.columns = val_per_line_column_names(num_inputs)
+        val_detail = add_group_averages(val_named)
+    avg_parts = []
+    if held_detail is not None:
+        avg_parts.append(summarize_errors(
+            held_detail,
+            "heldout_exam",
+            "Exam. Each job once. mape_pct is the average percent error of the group.",
+        ))
+    if val_detail is not None:
+        avg_parts.append(summarize_errors(
+            val_detail,
+            "val",
+            "Not the exam. Some jobs appear in more than one fold.",
+        ))
+    if avg_parts:
+        avg_df = pd.concat(avg_parts, ignore_index=True)
+
     now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     fold_lines = "\n".join(
         f"  Fold {r['fold']}: intercept={r['intercept']:.6g}  {r['coefficients']}  "
@@ -351,11 +599,16 @@ def run_linreg_kfold():
         f"TRAINER       : one straight line, fit on inner train only\n"
         f"CONFIG        : {num_inputs} inputs -> 1 target | "
         f"{K_FOLDS}-fold CV (seed {KFOLD_SEED}) | tag: {MODEL_TAG}\n"
-        f"SCALING       : none. Raw inputs, raw target. No log1p.\n"
+        f"SCALING       : same as the nets. log1p(time), then MinMax [-1, 1] "
+        f"on inputs and on the logged time. Fit on the training rows only. "
+        f"Guesses are turned back into milliseconds before MAPE, sMAPE, MAE, "
+        f"RMSE, and the per-line errors. Negatives clamped to 0. Printed "
+        f"coefficients are in the compressed space, not milliseconds per unit. "
+        f"A positive coefficient still means time grows with that knob.\n"
         f"PROTOCOL      : same outer 5-fold (seed {KFOLD_SEED}) and same inner "
         f"train/medval/val cut as ga_mlp_runs.py. Fit on train. Medval only sets "
-        f"passed_gate (<{MAPE_GATE:.0f}%), it does not drop the line. Val is the "
-        f"per-line file. The held-out 20% is the reported MAPE.\n"
+        f"passed_gate (<{MAPE_GATE:.0f}% in milliseconds), it does not drop the "
+        f"line. Val is the per-line file. The held-out 20% is the reported MAPE.\n"
         f"SEED          : {SEED}\n"
         f"METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across "
         f"folds | MAPE in %, SMAPE on 0..200% scale\n"
@@ -376,6 +629,15 @@ def run_linreg_kfold():
         f"AVG RMSE  : {_fmt(avg_rmse,  std_rmse,  ci_rmse,  ' ms')}\n"
         f"AVG R2    : {avg_r2:.4f}  (std ± {std_r2:.4f}  |  95% CI ± {ci_r2:.4f}  "
         f"→ [{avg_r2 - ci_r2:.4f}, {avg_r2 + ci_r2:.4f}])\n"
+        f"{'─' * 70}\n"
+        f"GROUP AVERAGES, held-out exam (each job once).\n"
+        f"MAPE is the average percent off. mean_ms is the average millisecond\n"
+        f"miss, which is not a percent. mean_signed_pct is too-high minus too-low,\n"
+        f"so it is not MAPE. median_pct is the middle job.\n"
+        f"{format_avg_lines(avg_df, 'heldout_exam') if avg_df is not None else '  (none)'}\n"
+        f"{'─' * 70}\n"
+        f"GROUP AVERAGES, val (not the exam, some jobs repeat).\n"
+        f"{format_avg_lines(avg_df, 'val') if avg_df is not None else '  (none)'}\n"
         f"{'=' * 70}\n"
     )
     print(log_text)
@@ -394,14 +656,25 @@ def run_linreg_kfold():
             held_path, index=False, header=False
         )
         print(f"Held-out predictions : {held_path}")
-    if val_parts:
+    if held_detail is not None:
+        detail_path = os.path.join(
+            RESULTS_DIR, f"heldout_per_line_{MODEL_TAG}_linreg.csv"
+        )
+        held_detail.to_csv(detail_path, index=False)
+        print(f"Held-out per-line     : {detail_path}")
+    if val_detail is not None:
         val_path = os.path.join(
             RESULTS_DIR, f"val_per_line_{MODEL_TAG}_linreg.csv"
         )
-        val_df = pd.concat(val_parts, ignore_index=True)
-        val_df.columns = val_per_line_column_names(num_inputs)
-        val_df.to_csv(val_path, index=False)
+        val_detail.to_csv(val_path, index=False)
         print(f"Val per-line errors   : {val_path}")
+    if avg_df is not None:
+        avg_path = os.path.join(RESULTS_DIR, f"error_averages_{MODEL_TAG}_linreg.csv")
+        avg_df.to_csv(avg_path, index=False)
+        print(f"Error averages        : {avg_path}")
+        legend_path = os.path.join(RESULTS_DIR, f"error_legend_{MODEL_TAG}_linreg.csv")
+        pd.DataFrame(LEGEND_ROWS).to_csv(legend_path, index=False)
+        print(f"Error legend          : {legend_path}")
     print(f"Log : {LOG_FILE}")
     print(f"CSV : {os.path.join(RESULTS_DIR, f'kfold_results_{MODEL_TAG}_linreg.csv')}")
 
