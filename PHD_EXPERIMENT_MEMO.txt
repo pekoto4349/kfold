@@ -1,7 +1,7 @@
 PHD FaaS SURROGATE EXPERIMENT — WORKING MEMO
 ============================================
 Purpose: plain-language reference to carry into new chats. Append new sections at the
-end under "APPENDIX" with date lines. Last updated: 2026-10-05.
+end under "APPENDIX" with date lines. Last updated: 2026-10-07 (APPENDIX G added).
 
 --- HOW TO USE THIS FILE ---
 - Read top-to-bottom for the full story once.
@@ -93,7 +93,9 @@ Target T:
 alpha (default 1e-2, env PMS_ALPHA): L2 penalty on large weights. Reduces overfit
   on ~250 inner-train points per fold. Higher = simpler model; lower = can overfit.
 
-max_iter (300): max L-BFGS steps per candidate network (cost cap per GA/CMA-ES try).
+max_iter: max L-BFGS steps per candidate network (inner fit cap). GA default 300
+  (Octave-aligned, many outer trials). CMA-ES default 2000 (fewer outer trials).
+  See APPENDIX G for rationale.
 
 solver lbfgs: weight trainer; closest sklearn analogue to Octave LM.
 
@@ -298,8 +300,213 @@ APPENDIX A — PLACEHOLDER FOR FUTURE PARAGRAPHS
 
 
 ================================================================================
+APPENDIX C — SCRIPTS, REGIME, AND LEAVE-ONE-M (PLAIN GUIDE, 2026-10-07)
+================================================================================
+
+This section is for someone who has never seen the project. No code required to
+understand the ideas. Paths: run everything from /home/cgiannak/kfold unless noted.
+
+--- C0. TWO EXPERIMENTS YOU MUST NOT MIX UP ---
+
+EXPERIMENT A — "Normal 5-fold" (main paper comparison)
+  Scripts: pms_kfold.py, ga_mlp_runs.py, cmaes_mlp_runs.py
+  Idea: shuffle all 630 rows, split into 5 random groups. Each row is tested once.
+  M values are MIXED in train and test (not a special M test).
+
+EXPERIMENT B — "Leave-one-M-out" (extra capacity test)
+  Scripts: pms_kfold_m_out.py, ga_mlp_m_out.py, cmaes_mlp_m_out.py
+  Idea: pick one container cap M (e.g. M=32). Train on every row where M is NOT 32.
+  Test only on rows where M IS 32. Repeat for each M level (6 times on full grid).
+  Answers: "Can the model predict T at an M it never saw in training?"
+
+REGIME ANALYSIS — not a third experiment
+  Script: regime_from_heldout.py
+  Idea: you ALREADY have predictions from A or B. This script only LABELS each test
+  row as saturated or unsaturated and recomputes errors in those two buckets.
+  It never trains anything. It never reruns GA or Octave.
+
+
+--- C1. WHAT EACH SCRIPT DOES (LOGIC ONLY) ---
+
+pms_kfold.py
+  What it is: Python "driver" that talks to Octave inside Docker (legacy PMS lab).
+  What it does, step by step:
+    1) Load the master CSV (rows = jobs, columns = S,N,M,...,T).
+    2) For fold 1..5: split 504 train / 126 test (same random split as Python GA).
+    3) Write train file into /home/pekoto/models/model_Dynamic_FoldK_.../
+    4) Run Docker: Octave searches net shape + trains (old pipeline, no log-T like Python).
+    5) Run Docker again: predict T on the 126 test inputs.
+    6) Python compares prediction vs true T → MAPE, sMAPE, MAE, RMSE, R² for that fold.
+    7) Save per-row test file: heldout_predictions_FOLDK.csv (inputs + true T + pred + fold).
+  Main outputs: fold metrics CSV under models/kfold_results/, log file, heldout CSVs per fold.
+  You need: Docker, pekoto paths, PMS-octave repo mounted.
+
+pms_kfold_m_out.py
+  Same Docker/Octave machinery as pms_kfold.py, but the OUTER split changes:
+    - Not 5 random folds.
+    - For each M_hold in {2,8,14,20,26,32}: train on all rows with M != M_hold,
+      test on all rows with M == M_hold (~105 test rows per hold).
+  Still one Octave train+predict per hold. Writes heldout per model folder and one
+  pooled file: kfold_results/heldout_predictions_{NEURONS}_{MODEL}_m_out.csv
+  Main outputs: kfold_metrics_*_m_out.csv, logs, pooled heldout for regime script.
+
+ga_mlp_runs.py
+  What it is: Full Python pipeline — genetic algorithm picks MLP shape, L-BFGS trains weights.
+  What it does each of 5 folds:
+    1) Same 504/126 split as pms_kfold (seed 42).
+    2) On the 504: split again into train / medval / val (for search only).
+    3) GA tries ~900 architectures: train each on train set, gate on medval MAPE < 20%,
+       after GA pick best on val.
+    4) That winning net predicts the 126 held-out rows (never used in search).
+    5) Record fold MAPE and append those 126 rows to a big held-out file.
+  Main outputs: ga_results/kfold_results_{TAG}_ga.csv (one row per fold summary),
+    ga_results/heldout_predictions_{TAG}_ga.csv (630 rows, all test preds),
+    experiment_logs_{TAG}_ga.txt
+  Config: edit DATA_FILE and MODEL_TAG at top of file (no --flags). Optional env:
+    PMS_SEED, PMS_ALPHA, PMS_POP, PMS_GEN, PMS_FOLDS.
+
+ga_mlp_m_out.py
+  Imports settings from ga_mlp_runs.py (same DATA_FILE, TAG, GA knobs).
+  Replaces the 5-fold loop with leave-one-M loop (see C0 experiment B).
+  Inner train/medval/val on the non-held M rows is unchanged — only WHO is tested changes.
+  Main outputs: kfold_results_{TAG}_ga_m_out.csv, heldout_predictions_{TAG}_ga_m_out.csv,
+    experiment_logs_{TAG}_ga_m_out.txt
+
+cmaes_mlp_runs.py
+  Same outer 5-fold and same inner split as ga_mlp_runs.py.
+  Difference: architecture search is CMA-ES (~200 tries) instead of GA (~900).
+  Same MLP trainer, log-T, scaling, metrics, held-out CSV export as GA.
+  Main outputs: cmaes_results/kfold_results_{TAG}_cmaes.csv, heldout_predictions_*_cmaes.csv
+  Config: edit DATA_FILE and MODEL_TAG in cmaes_mlp_runs.py. Env: PMS_MAXEVAL, etc.
+
+cmaes_mlp_m_out.py
+  Same relationship as ga_mlp_m_out to ga_mlp_runs: leave-one-M outer loop, imports
+  cmaes_mlp_runs.py config. Outputs use _cmaes_m_out suffix.
+
+regime_from_heldout.py
+  Input: ONE file (or auto-find Octave fold files) where each line is a test job with
+    S, N, M, (maybe extra columns), true T, predicted T, fold id.
+  Logic:
+    1) Read all test rows (no training).
+    2) For each row compute K = ceil(N/S). If K > M → saturated; else unsaturated.
+       (Saturated = more chunks than container slots → queueing / waves.)
+    3) Add error columns (absolute ms error, percent error).
+    4) Split table into "all", "saturated only", "unsaturated only".
+    5) Print and save MAPE, sMAPE, MAE, RMSE, R² for each of those three groups.
+  Main outputs: regime_results/{label}_all_rows.csv, _saturated.csv, _unsaturated.csv,
+    _summary.txt
+  CLI examples:
+    python3 regime_from_heldout.py --ga NSMT
+    python3 regime_from_heldout.py --ga NSMT --m-out
+    python3 regime_from_heldout.py --cmaes NSMT
+    python3 regime_from_heldout.py --octave --neurons-layers 4-55 --model-tag NSMT
+    python3 regime_from_heldout.py --heldout /path/to/file.csv --label myrun
+  --m-out only picks the M-out held-out filename (GA/CMA-ES). Same math either way.
+
+regime_mape.py (older helper)
+  Octave-only: loads heldout_predictions_FOLD*.csv from models/, prints overall and
+  per-M / per-S / per-N band MAPE. Does NOT label saturated vs unsaturated.
+  Use regime_from_heldout.py for sat/unsat unless you only want Octave breakdowns.
+
+regime_analysis.py
+  Local/experimental cousin; not the main path. Prefer regime_from_heldout.py.
+
+build_stacked_dataset.py
+  Builds combined CSV stacks from per-run outputs (for meta-analysis). Not part of
+  the core train/test loop.
+
+pms_runs.py
+  Single train/test split (not 5-fold). Legacy or quick runs. Main paper path uses
+  pms_kfold.py instead.
+
+
+--- C2. LEAVE-ONE-M-OUT — EXPLAINED LIKE A STORY ---
+
+Imagine 630 lab measurements. Every row fixes S, N, M and measures T.
+
+Normal 5-fold: when we test row X, we might have seen other rows with the SAME M in
+training. The model can "cheat" a little by memorizing how M=32 behaves from similar rows.
+
+Leave-one-M-out: we pretend M=32 was never invented. Train on rows with M=2,8,14,20,26
+only. Then ask: predict T for all jobs where M=32. The model never saw M=32 in training.
+
+We repeat for M=2, then M=8, ... until each M level had its turn as the test set.
+Every row still gets tested exactly once (each row has one M). Pooled MAPE over 630 rows
+is still meaningful, but per-M_hold columns tell you WHICH cap was hardest.
+
+This is NOT the same number as 5-fold MAPE. Do not compare them as if they were the
+same experiment. Use 5-fold for "overall surrogate quality on the grid." Use M-out for
+"generalize to an unseen container limit."
+
+
+--- C3. REGIME (SATURATED / UNSATURATED) — EXPLAINED LIKE A STORY ---
+
+Some jobs are "easy" for the cluster: few chunks, plenty of containers — everything
+runs in parallel. Others are "hard": many chunks, few containers — work waits in line.
+
+We label each row WITHOUT looking at T or predictions:
+  K = how many chunks (ceil(N/S)).
+  M = how many containers allowed.
+  If K > M → saturated (not enough slots at once).
+  If K <= M → unsaturated (enough slots for one wave).
+
+Why care? A surrogate might be great on easy rows and bad on queue-heavy rows (or the
+opposite). One overall MAPE hides that.
+
+Regime analysis needs, for each TEST row:
+  true T, predicted T, and S,N,M (to compute the label).
+
+That is exactly what heldout_predictions_*.csv files store after a k-fold or M-out run.
+
+regime_from_heldout.py steps in AFTER training:
+  - Read those rows.
+  - Tag saturated / unsaturated.
+  - Compute average error in each group + overall.
+
+You do NOT need to rerun ga_mlp_runs.py for regime IF you already have
+heldout_predictions_{TAG}_ga.csv from a run after the held-out export was added.
+You DO need a separate run of *_m_out.py if you want regime on the M-out protocol
+(then use --m-out or --heldout pointing at the _m_out file).
+
+
+--- C4. MINIMAL RUN ORDER (ONE DATASET TAG, E.G. NSMT) ---
+
+Align DATA_FILE / MODEL_TAG / MODEL / NEURONS_LAYERS across scripts first.
+
+5-fold path:
+  1) python3 pms_kfold.py
+  2) python3 ga_mlp_runs.py
+  3) python3 cmaes_mlp_runs.py
+  4) python3 regime_from_heldout.py --octave --neurons-layers 4-55 --model-tag NSMT
+  5) python3 regime_from_heldout.py --ga NSMT
+  6) python3 regime_from_heldout.py --cmaes NSMT
+
+Leave-one-M path (additional):
+  7) python3 pms_kfold_m_out.py
+  8) python3 ga_mlp_m_out.py
+  9) python3 cmaes_mlp_m_out.py
+  10) python3 regime_from_heldout.py --ga NSMT --m-out
+  11) python3 regime_from_heldout.py --cmaes NSMT --m-out
+  12) python3 regime_from_heldout.py --heldout .../heldout_predictions_4-55_NSMT_m_out.csv --label pms_m_out
+
+
+--- C5. HELD-OUT CSV COLUMN LAYOUT (WHAT regime_from_heldout EXPECTS) ---
+
+No header row. Columns left to right:
+  S, N, M, [optional extra inputs like K], T (true), prediction, fold
+
+The script assumes the LAST column is fold id, second-to-last is prediction,
+third-from-last is true T. First three are always S, N, M.
+
+
+================================================================================
 APPENDIX B — PLANNED SCRIPTS (DESIGN NOTES, 2026-10-05)
 ================================================================================
+
+NOTE (2026-10-07): B1 and B2 below were design notes before implementation. They are
+now covered by regime_from_heldout.py (B1 sat/unsat on existing predictions) and
+pms_kfold_m_out.py / ga_mlp_m_out.py / cmaes_mlp_m_out.py (B2 leave-one-M runners).
+Keep B1/B2 for history; use APPENDIX C for how to run them.
 
 B1) Saturated / unsaturated dataset helper (NOT YET IMPLEMENTED)
   - Possible without new measurements: from any master_dataset*.csv (S,N,M,...,T),
@@ -322,5 +529,897 @@ B2) Leave-one-M-out split generator (NOT YET IMPLEMENTED)
     would run a dedicated harness OR temporarily point DATA_FILE at train CSV and
     evaluate on test CSV (custom loop). Feasible; not plug-and-play without a small
     runner script.
+
+================================================================================
+APPENDIX D — LINEAR REGRESSION & XGBOOST (LIKE A STORY, 2026-10-07)
+================================================================================
+
+Status: PLANNED baselines — not yet wired as linreg_runs.py / xgboost_runs.py in kfold.
+Section 8.4–8.5 and README_CHEATSHEET §15–16 describe the intent; this appendix explains
+WHY, WHAT SCIENCE YOU GET, HOW TO SET UP, and WHAT TO EXPECT — for a complete beginner.
+
+
+--- D1. THE STORY: WHY BOTHER WITH "SIMPLE" MODELS? ---
+
+You already have a dramatic comparison: old Octave lab (~13–17% MAPE) vs modern Python
+neural nets (~8–12% MAPE). A reviewer might still ask:
+
+  "Is the neural net special, or would ANY reasonable model work on 630 table rows?"
+
+Without baselines, the answer is guesswork. Two standard answers in machine learning:
+
+  (1) LINEAR REGRESSION — the simplest honest curve you can draw through the data.
+  (2) XGBOOST — the usual "strong default" for small spreadsheet-like problems.
+
+Think of a race:
+  - Octave PMS = old car from your lab (historical baseline).
+  - GA/CMA-ES MLP = tuned sports car you built (architecture search + neural net).
+  - Linear regression = walking (if walking keeps up, the sports car is embarrassing).
+  - XGBoost = a modern SUV (often wins tabular races without neural nets).
+
+Scientifically you are NOT trying to prove trees are "better than science." You are
+proving WHERE the gain comes from:
+  - Is it log-T + regularization + trainer? (Python vs Octave gap)
+  - Is it neural nets vs trees? (MLP vs XGBoost at same CV)
+  - Is it expensive architecture search? (XGBoost with light tuning vs GA 900 evals)
+
+If MLP beats linear regression by a lot → the T(S,N,M) surface has real non-linearity
+or interactions worth modeling. If MLP only beats linreg by a hair → your paper should
+tone down "deep learning" language and emphasize honest error bands.
+
+If XGBoost matches or beats MLP → reviewers are satisfied you tried the tabular SOTA;
+feature importance tells a physics story (which knob matters: N vs M vs S).
+
+
+--- D2. LINEAR REGRESSION — WHAT IT IS IN ONE BREATH ---
+
+You predict T as a weighted sum of inputs plus a constant:
+
+  T_hat ≈ w0 + w1·S + w2·N + w3·M
+
+(Optional: add K, U, B if your CSV variant includes them — see D5.)
+
+No hidden layers. No neurons. No genetic algorithm. Fit the weights w with ordinary
+least squares (or Ridge regression with a small penalty if you want stability on 504
+training points).
+
+It cannot learn "if N is huge AND M is small, explode" unless you manually add features
+like N×M or K. That limitation is the point: it is the floor for "linear physics."
+
+
+--- D3. LINEAR REGRESSION — WHY IT SHOULD HAPPEN (SCIENCE) ---
+
+Adds to the thesis:
+
+  1) SANITY FLOOR — Every serious ML paper has a simple baseline. Linreg is Model 0.
+
+  2) INTERPRETABILITY — Signs of w1,w2,w3: does T grow when N grows? Shrink when M grows?
+     Easy sentence for a supervisor: "capacity M enters negatively, workload N positively."
+
+  3) CALIBRATION PROOF (optional extra) — Fit linreg with and without K on the same folds.
+     If K's coefficient is significant and MAPE drops, you have a statistical story that
+     invocation count matters (complements NSMKT Octave results).
+
+  4) FAIR COMPARISON TO MLP — Same 630 rows, same 5-fold splits (seed 42), same test MAPE
+     formula. Difference in MAPE is attributable to model class, not cheating on data.
+
+What it does NOT replace: Octave legacy (that is a pipeline + lab tool story). Linreg is
+a modern Python "could a spreadsheet formula do this?" story.
+
+
+--- D4. LINEAR REGRESSION — SETUP (HOW IT SHOULD LOOK WHEN IMPLEMENTED) ---
+
+Match the honest protocol of ga_mlp_runs.py:
+
+  OUTER: 5-fold, shuffle seed 42, 504 train / 126 test per fold, pool 630 test preds.
+
+  INNER: none — no architecture search. Optionally: tune only Ridge alpha on train
+  (or a tiny inner CV on the 504) — keep it minimal so linreg stays "simple."
+
+  INPUTS:
+    - NSMT variant: columns S, N, M (scale: either raw or MinMax like MLP — pick ONE
+      and document; raw is more interpretable for coefficients).
+    - NSMKT variant: S, N, M, K — test whether explicit K helps linreg (expect yes).
+
+  TARGET:
+    - Primary: predict T in milliseconds on the test fold (same as paper table).
+    - Optional fair-ness run: predict log1p(T) then expm1 for MAPE — only if you also
+      report a raw-T run; otherwise reviewers may say you matched MLP's trick unfairly.
+    Recommendation: raw T for linreg (interpretable); compare to MLP on pooled MAPE.
+
+  OUTPUTS (mirror GA):
+    - linreg_results/kfold_results_{TAG}_linreg.csv
+    - linreg_results/heldout_predictions_{TAG}_linreg.csv  → regime_from_heldout later
+    - experiment_logs_{TAG}_linreg.txt
+
+  LEAVE-ONE-M (optional second script linreg_m_out.py):
+    Same outer loop as ga_mlp_m_out.py; still no inner GA. Answers: "does a straight
+    line generalize to unseen M worse than MLP?" (Often yes — linreg may suffer more on M-out.)
+
+
+--- D5. XGBOOST — WHAT IT IS IN ONE BREATH ---
+
+Imagine many tiny yes/no questions on the data:
+  "Is N > 5000?" → adjust prediction up a little.
+  "Is M < 8?" → adjust up more.
+Each question is a small tree. XGBoost builds hundreds of trees in sequence; each new
+tree fixes the remaining errors of the previous ones (boosting). Final prediction = sum
+of tree outputs.
+
+It is still not a neural net. There is no LM/L-BFGS on weights in layers. Hyperparameters
+(max depth, learning rate, number of trees) matter but are far cheaper to tune than
+900 neural architecture evaluations per fold.
+
+
+--- D6. XGBOOST — WHY IT SHOULD HAPPEN (SCIENCE) ---
+
+Adds to the thesis:
+
+  1) REVIEWER EXPECTATION — On n≈600 tabular rows, gradient boosted trees are the
+     default "did you try something modern besides nets?" (Grinsztajn et al. 2022 style).
+
+  2) MODEL FAMILY QUESTION — MLP says "smooth nonlinear surface." XGBoost says "piecewise
+     rules and thresholds." FaaS timing often has regime changes (saturated vs not) —
+     trees can latch onto K>M style structure without you hand-drawing K.
+
+  3) FEATURE IMPORTANCE — After training, XGBoost reports which of S,N,M,(K) drove splits.
+     Good for PhD narrative: "N dominates" vs "M dominates" vs "S rarely used."
+
+  4) SEARCH COST CONTRAST — A tuned XGBoost run might be 50–200 trials (Optuna) vs GA 900
+     full network trains. If MAPE is similar, you argue efficiency.
+
+  5) REGIME HYPOTHESIS — Run regime_from_heldout on XGBoost held-outs: trees might win
+     on saturated rows, MLP on unsaturated (or vice versa). That is publishable texture.
+
+What it does NOT do: replace GA/CMA-ES in the "we replicated Octave architecture search"
+story. It is a parallel leg: "best practice tabular learner on the same CSV."
+
+
+--- D7. XGBOOST — SETUP (HOW IT SHOULD LOOK WHEN IMPLEMENTED) ---
+
+Same OUTER 5-fold as everyone else (seed 42, identical folds — critical).
+
+  INPUTS: S, N, M for NSMT; add K for NSMKT. No need to hand-engineer K if using NSMT only
+  (trees can approximate ceil(N/S) interactions from S and N, but giving K can help).
+
+  TARGET: T in milliseconds (standard). Optional: log1p(T) target — same debate as linreg;
+  many teams train XGBoost on raw T for MS MAE/RMSE clarity.
+
+  HYPERPARAMETERS (keep scope small):
+    - n_estimators, max_depth, learning_rate, subsample, colsample_bytree, reg_lambda.
+    - Tune on inner part of the 504 train rows only (never touch the 126 test).
+    - Budget: e.g. 100–300 Optuna trials OR fixed conservative defaults for v1.
+
+  NO medval MAPE gate like Octave — that gate is specific to legacy neural search.
+  Instead: early stopping on a validation slice of train if you use XGBoost's API.
+
+  OUTPUTS:
+    - xgb_results/kfold_results_{TAG}_xgb.csv
+    - xgb_results/heldout_predictions_{TAG}_xgb.csv
+    - feature importance per fold or pooled → xgb_results/importance_{TAG}.csv
+    - logs
+
+  M-out: xgboost_m_out.py optional — same scientific question as ga_mlp_m_out.
+
+  REGIME: python3 regime_from_heldout.py --heldout xgb_results/heldout_predictions_TAG_xgb.csv --label xgb_TAG
+  (Extend CLI with --xgb TAG when implemented — same pattern as --ga.)
+
+
+--- D8. POTENTIAL COMPARISONS (WHAT TABLES YOU WOULD WRITE) ---
+
+TABLE 1 — Main 5-fold, pooled over 630 test rows (one row per method):
+
+  | Method          | MAPE | sMAPE | MAE | RMSE | R²   |
+  | Octave PMS      | ~13–17% | ... | ... | ... | ~0.84–0.93 |
+  | GA-MLP          | ~8–12%  | ... | ... | ... | ~0.95+   |
+  | CMA-ES MLP      | similar MAPE, sometimes better RMSE |
+  | Linear reg      | expect WORSE than MLP unless surface nearly flat |
+  | XGBoost         | often ~8–10% band on tabular benchmarks; may match MLP |
+
+TABLE 2 — Same methods, saturated vs unsaturated MAPE only (from regime_from_heldout).
+
+TABLE 3 — Leave-one-M pooled MAPE (separate table — not mixed with Table 1).
+
+COMPARISON QUESTIONS (plain language):
+
+  Q1: Octave vs GA-MLP → preprocessing + trainer story (already your headline).
+  Q2: GA-MLP vs CMA-ES → search budget / RMSE tail.
+  Q3: GA-MLP vs XGBoost → "do we need neural nets on this grid?"
+  Q4: GA-MLP vs linreg → "how nonlinear is the problem?"
+  Q5: XGBoost vs linreg → "how much do trees buy over a straight line?"
+  Q6: All methods on saturated-only → "who handles queueing rows?"
+
+STATISTICS (later, optional): paired t-test on per-fold MAPE between two methods —
+stronger than "confidence intervals don't overlap." Not required for first plots.
+
+
+--- D9. WHAT RESULTS TO EXPECT (HONEST GUESSES, NOT PROMISES) ---
+
+Based on your current logs and typical tabular ML:
+
+  LINEAR REGRESSION
+    - Likely MAPE noticeably above GA/CMA-ES (e.g. low teens to high teens on NSMT) if
+      T has strong curvature, thresholds, and interaction between N and M.
+    - Might get closer on NSMKT if K is included (linreg becomes partly physics-aware).
+    - R² might still look "okay" (0.7–0.85) while MAPE looks bad — percent error punishes
+      small T rows. Report both.
+    - On leave-one-M-out: linreg may degrade more than MLP when M was never seen (linear
+      extrapolation in M is weak).
+
+  XGBOOST
+    - Often lands in the same ballpark as Python MLP (~8–11% MAPE on NSMT) on similar
+      benchmarks; sometimes 1–2 percentage points better MAPE, sometimes worse RMSE.
+    - Unlikely to reproduce Octave ~17% unless you deliberately break preprocessing —
+      that gap is mostly Octave pipeline, not "trees vs nets."
+    - Feature importance: expect N and M to rank high; S may matter for chunking effects.
+    - Saturated subset: trees sometimes win because splits mimic "K>M style" boundaries.
+
+  IF XGBOOST ≈ MLP AND BOTH BEAT LINREG BY A LOT
+    → Paper says: "Nonlinear surrogates justified; tree and neural approaches agree;
+       legacy Octave gap is methodology not model family."
+
+  IF XGBOOST BEATS MLP
+    → Emphasize efficiency + interpretability; MLP remains link to Octave GA tradition.
+
+  IF LINREG IS SURPRISINGLY CLOSE TO MLP
+    → Emphasize simplicity for deployment; MLP may be overkill on this 630-point grid.
+
+
+--- D10. MINIMAL IMPLEMENTATION ORDER (WHEN YOU BUILD SCRIPTS) ---
+
+  1) linreg_kfold.py — copy fold loop from ga_mlp_runs.py, swap ga_search for Ridge fit.
+  2) xgboost_kfold.py — same fold loop, XGBRegressor + small hyperparam grid or Optuna.
+  3) Export heldout_predictions_* like GA (so regime_from_heldout works unchanged).
+  4) Add one row each to APPENDIX C4 run list after step 3.
+  5) Optional: *_m_out.py twins once 5-fold baselines look correct.
+
+Do NOT change Octave Docker runs for linreg/XGB — they are Python-only legs on the
+same CSV files.
+
+
+--- D11. ONE-PARAGRAPH ELEVATOR PITCH FOR YOUR SUPERVISOR ---
+
+"We compare legacy Octave neural search with modern Python surrogates on identical
+5-fold tests. Linear regression shows how much of T is explainable by a straight
+formula in S,N,M. XGBoost shows whether a standard tree ensemble matches evolved MLPs
+on our 630 lab points. Together they separate (a) old vs new training pipeline,
+(b) linear vs nonlinear, and (c) neural vs tree — without new measurements, only
+honest re-use of the same held-out rows and the same regime labels for saturated jobs."
+
+
+================================================================================
+APPENDIX E — GA, CMA-ES, AND THE MLP (READ ME LIKE A CHAPTER)
+================================================================================
+
+Written for ga_mlp_runs.py and cmaes_mlp_runs.py. Each major section has two layers:
+(1) a plain walkthrough you can read without ML background, and (2) a "Going deeper"
+block with the mechanics that match the code. Pedagogy follows standard references:
+sklearn on MLP regression, neural architecture search with GAs (e.g. Xie et al.,
+ICCV 2017 "Genetic CNN"), and the CMA-ES tutorial by Hansen (arXiv:1604.00772) plus
+intuitive blogs (e.g. covariance-as-ellipse sampling).
+
+
+--- E1. The job you are trying to do ---
+
+PLAIN WALKTHROUGH
+
+You measured many FaaS runs. Each row is one experiment: you chose split size S,
+workload size N, and container cap M, and you recorded end-to-end time T in
+milliseconds. A surrogate model is simply a function that guesses T when you type in
+new S, N, M without running the lab again.
+
+You chose a multilayer perceptron (MLP) for that function. Picture data flowing in
+on the left, passing through one or more hidden layers in the middle, and coming out
+as a single predicted time on the right (sklearn's MLPRegressor for regression works
+exactly this way: one output neuron, no activation on the output). Hidden layers are
+called hidden because you do not observe their values in the dataset; the network
+invents internal combinations of S, N, M that help prediction. Without hidden layers
+and nonlinear activations, the model would be just a linear formula in S, N, M. Your
+surface is not linear, so you need depth and nonlinearity (see Dive into Deep Learning,
+"Multilayer Perceptrons", on why stacked affine layers plus activation beat a single
+linear map).
+
+GOING DEEPER
+
+Two different kinds of unknowns appear in every run:
+
+  Architecture — how many hidden layers (3 or 4 in your code), how wide they are (1–55
+  neurons), and which activation function all hidden layers share (tanh, logistic,
+  relu, or identity). This is a small discrete/continuous design choice.
+
+  Weights — thousands of connection strengths and biases. Given a fixed architecture,
+  training finds weights that minimize error on the training rows.
+
+GA and CMA-ES only search architecture. They never mutate individual weights. For each
+architecture they propose, L-BFGS (a quasi-Newton optimizer, the Python stand-in for
+Octave's Levenberg–Marquardt trainer) fits weights on the inner training split. That
+split of roles is standard in neural architecture search: the outer loop picks structure,
+the inner loop trains parameters (same pattern as in GA-based NAS surveys and in
+Genetic CNN, where each individual is fully trained before fitness is measured).
+
+
+--- E2. What the Python MLP pipeline fixes before search starts ---
+
+PLAIN WALKTHROUGH
+
+Before GA or CMA-ES suggests any shape, the scripts already decided how data are
+presented to the network. Inputs are scaled column-wise to [-1, 1] so S, N, and M
+contribute on a comparable scale (same idea as Octave normalize.m on inputs). The
+target T is heavily skewed — a few very long jobs dominate — so the code trains on
+log(1+T), scaled to [-1, 1], and converts predictions back with expm1 when reporting
+MAPE in real milliseconds. That preprocessing is a major reason Python pooled MAPE
+(~8–12%) sits below legacy Octave (~13–17%) on the same grid: you changed the learning
+problem, not only the search algorithm.
+
+Also fixed: L2 regularization (alpha, default 1e-2, env PMS_ALPHA), solver lbfgs,
+five-fold outer CV with seed 42, and negative predictions clamped to zero at evaluation
+like pms_kfold. The search only rotates among legal architectures; it does not turn
+these knobs.
+
+GOING DEEPER
+
+Per candidate architecture, sklearn builds MLPRegressor with hidden_layer_sizes set
+from the decoded genome, fits on inner TRAIN, and the search reads training MSE on
+TRAIN as the objective to minimize (Octave nnscript.m uses training MSE similarly).
+GA caps L-BFGS at max_iter=300 per candidate; CMA-ES uses max_iter=2000 because the
+outer budget is only ~200 architectures per fold instead of ~900 — more inner steps
+per try, fewer tries total.
+
+
+--- E3. One fold — how an honest score is produced ---
+
+PLAIN WALKTHROUGH
+
+Think of 630 rows and five rounds. In each round, 126 rows are the final exam: they
+stay out of the room while you design and train the model. The number you care about
+for that round is average percent error on those 126 only.
+
+The other 504 rows are used while you search. Roughly half of them (~252) are where
+L-BFGS actually learns weights for each candidate network. Another slice (~100) is
+medval: if a candidate's MAPE there is 20% or worse, you throw it away (legacy Octave
+save gate). A larger slice (~152) is val: among survivors, the lowest val MAPE wins.
+The winner then predicts the 126 held-out rows. Across five rounds, every row is in
+the held-out set exactly once. GA and CMA-ES follow this protocol line for line; only
+the way they propose the next architecture differs.
+
+GOING DEEPER
+
+Outer: KFold(n=5, shuffle=True, random_state=42). Inner on 504: ~30% val, then medval
+as 20% of the original 80%, remainder train (createmodel.m proportions). Search fitness
+= training MSE. Pool of saved nets = medval MAPE < MAPE_GATE (20%). Selected net =
+argmin val MAPE on pool. Reported fold metric = safe_mape on outer 126. The medval
+gate is not a target MAPE; it is a quality filter during search.
+
+
+--- E4. Genetic algorithm — population, chromosomes, generations ---
+
+PLAIN WALKTHROUGH
+
+A genetic algorithm for architecture search works like this (standard NAS story; see
+Genetic CNN and GA-NAS tutorials). You maintain a population of candidate network
+designs. Each design is encoded as a chromosome — a fixed list of numbers describing
+the net. You train each design, measure how good it is (fitness), keep the better ones,
+combine two parents to make children (crossover), randomly tweak some digits
+(mutation), and repeat for many generations.
+
+In ga_mlp_runs.py the population size is 30 and there are 30 generations, so you train
+about 30 × 30 = 900 different architectures per fold — matching Octave PMS
+(PopulationSize 30, Generations 30). Each architecture is a chromosome of six
+integers:
+
+  [ n_layers, width_L1, width_L2, width_L3, width_L4, activation_index ]
+
+n_layers is 3 or 4. Only the first n_layers width genes matter; the rest are ignored.
+Widths are integers from 1 to 55. activation_index maps to tanh, logistic, relu, or
+identity. Example: [4, 12, 40, 8, 55, 2] → four hidden layers of sizes 12, 40, 8, 55
+with relu. That per-layer freedom is important: layer 2 can be narrow while layer 3 is
+wide.
+
+Each generation: evaluate all 30 (build MLP, L-BFGS on TRAIN, return training MSE to
+DEAP); tournament selection (pick 3, keep best as parent); crossover with probability
+0.8; mutation with probability 0.2. After evolution, apply the same medval gate and
+val pick as CMA-ES.
+
+GOING DEEPER
+
+This is discrete search over a combinatorial space — millions of legal integer
+blueprints, 900 samples per fold. Hyperparameters in file: POP_SIZE, N_GEN (env
+PMS_POP, PMS_GEN), CXPB=0.8, MUTPB=0.2, INDPB=0.2, TOURNSIZE=3. Fitness is training
+MSE only during evolution; medval and val are used for save/select after each
+candidate is trained inside cmaes_search/ga_search objective callback.
+
+
+--- E5. CMA-ES — evolution strategy in three dimensions ---
+
+PLAIN WALKTHROUGH
+
+CMA-ES (Covariance Matrix Adaptation Evolution Strategy) is still "try many network
+shapes and keep improving," but the mechanism is different from breeding integer
+strings. Hansen's tutorial describes it as black-box optimization in continuous space:
+you do not need gradients of the objective. The algorithm keeps a mean point and a
+multivariate normal distribution (a bell-shaped cloud) over the search variables. Each
+iteration it samples several points from that cloud, evaluates them, moves the mean
+toward the better points, and reshapes the cloud — stretching along directions that
+recently lowered error and shrinking useless directions. Interactive tutorials (e.g.
+covariance ellipse demos) show the same idea: changing variances widens or narrows
+sampling along an axis; changing covariance tilts the ellipse when two variables work
+together.
+
+In cmaes_mlp_runs.py the cloud lives in three dimensions, each between 0 and 1:
+
+  x[0] → decoded to number of layers (3 or 4)
+  x[1] → decoded to neuron count (1–55), same for every hidden layer
+  x[2] → decoded to activation choice
+
+So CMA-ES searches a unit cube, not a string of six integers. After sampling x, the
+code rounds/decodes to a legal MLP, trains it, returns training MSE. The `cma` library
+loop is ask() → evaluate → tell(). Budget is PMS_MAXEVAL (default 200) evaluations per
+fold — not population × generations. Start mean [0.5, 0.5, 0.5], initial spread
+sigma0=0.3, bounds [0,1]³.
+
+The trade-off: CMA-ES is often more sample-efficient in low-dimensional continuous
+problems (Hansen: learning covariance is analogous to learning curvature, like a
+quasi-Newton method on the search distribution). Your encoding is simpler than GA's —
+all hidden layers share one width — so it cannot represent (12, 40, 8, 55) unless you
+change the code.
+
+GOING DEEPER
+
+Same medval < 20% save list and val MAPE selection as GA. Same outer test MAPE.
+Different outer loop: evolution strategy with covariance adaptation vs DEAP genetic
+operators on integers. Typical empirical outcome on your logs: similar pooled MAPE;
+CMA-ES sometimes better RMSE at one-fifth the architecture evaluations.
+
+
+--- E6. What "search space" means — and what it is not ---
+
+PLAIN WALKTHROUGH
+
+Search space means the menu of network shapes the outer algorithm may order. For GA,
+each menu item is a full integer blueprint with independent layer widths. For CMA-ES,
+each menu item is a point in the three-dimensional box [0,1]³ that becomes a blueprint
+after rounding. Both menus list architectures only.
+
+They do not list weight settings. Weight space is enormous (every real number in every
+connection). Searching it with evolution would be impractical on 630 rows. Instead, for
+each menu item L-BFGS solves a weight-fitting subproblem on ~252 training points. When
+you read "900 evaluations" for GA, that means 900 architectures, each with a full
+weight fit — not 900 tweaks to one net.
+
+GOING DEEPER
+
+GA expressivity: hidden_layer_sizes = (w1, w2, …) heterogeneous.
+CMA-ES expressivity: hidden_layer_sizes = (n, n, …, n) homogeneous.
+Comparing GA vs CMA-ES in the thesis is therefore a comparison of architecture
+search methods under identical CV, trainer, and preprocessing — not two different
+predictors.
+
+
+--- E7. GA vs CMA-ES — same exam, different search engines ---
+
+| Question | GA (DEAP) | CMA-ES |
+|----------|-----------|--------|
+| What is minimized while searching? | Training MSE on inner TRAIN | Same |
+| When is a net kept? | medval MAPE < 20% | Same |
+| Who wins among kept nets? | Lowest val MAPE | Same |
+| What you publish per fold | MAPE on 126 outer test rows | Same |
+| How a design is written | 6 integers (chromosome) | 3 floats in [0,1] |
+| Hidden layer widths | Can differ per layer | One count, all layers |
+| Trials per fold (default) | ~900 = 30 pop × 30 gen | 200 (PMS_MAXEVAL) |
+| How new trials are born | Selection, crossover, mutation | Sample cloud, adapt mean + covariance |
+
+Family labels (from optimization literature): GA = genetic algorithm on discrete
+encodings; CMA-ES = evolution strategy for continuous black-box objectives. Both are
+evolutionary computation, but GA recombines discrete genes; CMA-ES adapts a Gaussian
+search distribution (Hansen tutorial, Section 0–1).
+
+
+--- E8. Knobs in the scripts (when you touch env vars) ---
+
+Shared: DATA_FILE and MODEL_TAG at top of each runner file; PMS_FOLDS (default 5);
+KFOLD_SEED 42; PMS_SEED for reproducibility; PMS_ALPHA for L2; MAPE_GATE 20.
+
+GA: PMS_POP (30), PMS_GEN (30) → architecture trial count ≈ product.
+
+CMA-ES: PMS_MAXEVAL (200) → total architecture trials per fold.
+
+Activations searched: tanh, logistic, relu, identity. Layers: 3 or 4. Neurons after
+decode: 1–55.
+
+
+--- E9. Further reading (good explanations online) ---
+
+  • sklearn — "Neural network models (supervised)": MLP regression, hidden layers,
+    MSE loss, role of alpha.
+  • Dive into Deep Learning — Chapter 5.1 Multilayer Perceptrons: why nonlinearity.
+  • Xie et al., Genetic CNN (ICCV 2017): GA trains each architecture, fitness from
+    accuracy — same outer-inner pattern as your T surrogate.
+  • Hansen & Ostermeier, "The CMA Evolution Strategy: A Tutorial" (arXiv:1604.00772):
+    multivariate normal sampling, covariance adaptation, black-box view.
+  • Szhaovas.github.io CMA-ES blog series (parts 1–2): intuition for covariance ellipse.
+  • vivektramamoorthy.github.io/CMAEStutorial — interactive covariance demo.
+
+
+--- E10. One paragraph to close ---
+
+Your PhD leg compares two ways to search MLP architecture on the same FaaS dataset and
+the same honest five-fold protocol. The MLP is a standard nonlinear regressor from S, N,
+M to T; L-BFGS fits weights; GA explores a large discrete blueprint space with about
+nine hundred trials per fold like legacy Octave; CMA-ES explores a three-dimensional
+continuous space with about two hundred trials and learns how to sample smarter over
+time. Everything else — log-T, scaling, medval gate, val pick, held-out MAPE — is
+shared. That is the experiment: not "neural nets vs something else," but "how should
+we search the shape of the net?"
+
+
+================================================================================
+APPENDIX F — HOW GA AND CMA-ES RUN, STEP BY STEP (2026-10-07)
+================================================================================
+
+Companion to Appendix E. Read E first for what problem is being solved; read F for
+how each search engine actually moves from one trial to the next. Same pattern:
+PLAIN WALKTHROUGH, then GOING DEEPER. Numbers match ga_mlp_runs.py and
+cmaes_mlp_runs.py.
+
+
+--- F1. Words you need once ---
+
+Fitness (both methods): after building one architecture and training on inner TRAIN,
+the script measures training MSE — mean squared error between predicted and true T on
+those train rows. Lower is better. This is the number the search tries to push down
+while it runs. Medval and val are used separately for saving and final pick (Appendix E3).
+
+Individual / candidate: one proposed architecture (GA: chromosome of six integers;
+CMA-ES: vector of three floats in [0,1]).
+
+Generation (GA only): one full cycle — select parents, make children, mutate, evaluate
+children, replace the population.
+
+Iteration (CMA-ES): one ask/tell cycle — sample a batch of points, evaluate, update
+the search distribution.
+
+
+--- F2. Genetic algorithm — one generation, in order ---
+
+PLAIN WALKTHROUGH
+
+Start of a fold: create 30 random chromosomes (30 random legal integers within bounds).
+Train all 30 nets and record training MSE for each. That is generation 0.
+
+For each of the next 30 generations (30 total in the default settings):
+
+  Step A — Selection (tournament). You need 30 parents to breed the next generation.
+  Thirty times you run a mini contest: draw 3 chromosomes at random from the current
+  population, compare their training MSE, and keep the one with the lowest error as a
+  parent. The winner of a 3-way contest becomes one slot in the offspring list. No
+  global sorting of all 30; local contests only. That is tournament selection with
+  tournament size 3.
+
+  Step B — Crossover (recombination). Take the 30 parents in pairs (1st with 2nd, 3rd
+  with 4th, …). With 80% probability (CXPB = 0.8), cut each pair of chromosomes at two
+  random positions and swap the middle segment between parents. You now have two child
+  chromosomes that mix genes from both parents — e.g. child 1 gets layers from dad and
+  widths from mum. With 20% probability the pair is copied unchanged. Children whose
+  genes changed lose their old fitness score and must be re-evaluated.
+
+  Step C — Mutation. For each child, with 20% probability (MUTPB = 0.2), run integer
+  mutation: for each gene independently, with 20% chance (INDPB = 0.2), replace that
+  gene by a new random integer in the allowed range (layers 3–4, widths 1–55,
+  activation 0–3). Again, mutated individuals must be re-trained.
+
+  Step D — Evaluation. Every child without a valid fitness gets built as an MLP, trained
+  on TRAIN, and scored with training MSE. Inside that training call, medval MAPE is
+  also checked; nets that pass the 20% gate go into the saved list.
+
+  Step E — Replacement and elitism. The new population becomes the 30 children (not
+  parents+children). One elitist rule: copy the all-time best individual (lowest
+  training MSE seen so far, tracked in a Hall of Fame) into slot 0 of the new
+  population so the best blueprint is never lost by bad luck in crossover.
+
+After 30 generations, evolution stops. The script does not use the final population
+directly for the thesis score; it picks the best net on val MAPE from everything that
+passed medval during the whole run (Appendix E3).
+
+GOING DEEPER
+
+Implementation: DEAP toolbox — selTournament, cxTwoPoint, mutUniformInt with low/up
+vectors matching gene bounds. Fitness is a single objective (train_mse,) minimized.
+Initial pop: tools.initRepeat. Budget ≈ POP_SIZE × N_GEN evaluations, with some
+re-evaluation skipped when crossover/mutation do not invalidate fitness (unchanged
+children keep old fitness). Worst failed fits return penalty 1e18. Env: PMS_POP, PMS_GEN,
+CXPB, MUTPB, INDPB, TOURNSIZE.
+
+
+--- F3. GA operators — what each one is for ---
+
+PLAIN WALKTHROUGH
+
+Selection answers: "who gets to reproduce?" Tournament is cheap and avoids needing to
+rank the entire population every time. It also keeps some diversity: a mediocre
+chromosome can still win a contest if the other two drawn are worse.
+
+Crossover answers: "how do we combine good partial ideas?" A parent with good layer
+count but bad widths can meet a parent with the opposite; two-point crossover can
+merge them without destroying every gene at once (single-point cut is harsher; your
+code uses two cut points).
+
+Mutation answers: "how do we try things selection never combined?" Without mutation,
+every gene would eventually come only from the initial random draw and crossover
+rearrangements of those digits. Random gene resets let the search jump to new parts of
+the integer grid (e.g. try activation relu when everyone else was tanh).
+
+Elitism answers: "can we lose the best net by accident?" Forcing the historical best
+into the next generation prevents one unlucky crossover from wiping the lowest MSE
+seen so far.
+
+GOING DEEPER
+
+This is the classic generational GA template used in Octave PMS and in many NAS papers.
+Search is discrete and combinatorial; crossover is meaningful because genes are
+semantically separate (depth, per-layer width, activation). There is no explicit
+model of correlation between genes (e.g. "width L2 should track width L3"); the
+algorithm relies on population diversity and 900 trials to discover good combinations.
+
+
+--- F4. CMA-ES — one iteration, in order ---
+
+PLAIN WALKTHROUGH
+
+Initialize: mean m = (0.5, 0.5, 0.5) in the unit cube, overall step scale sigma = 0.3,
+and an internal covariance shape (starts as a round cloud — equal uncertainty in all
+three directions). Set evaluation budget to 200 architectures.
+
+Repeat until 200 evaluations are used or stop rules fire:
+
+  Step 1 — ask(). The library generates a batch of candidate vectors x. Each x is a
+  point in [0,1]³ sampled from a multivariate normal distribution centered at m, with
+  spread controlled by sigma and the current covariance matrix. Think: "cloud of trial
+  points around where we currently believe good nets live."
+
+  Step 2 — Evaluate. For each x: decode to (layers, neurons, activation), build MLP,
+  train on TRAIN, return training MSE. Same medval save logic as GA inside objective().
+
+  Step 3 — tell(). Hand all (x, MSE) pairs back to CMA-ES. The algorithm ranks points by
+  MSE (lower better). It moves m toward the better-ranked points (weighted average of
+  successful steps). It updates the covariance matrix so future samples stretch along
+  directions that recently helped and shrink along directions that did not. It also
+  adapts sigma: if progress is good, steps can grow; if not, sigma shrinks so the
+  search does not wander blindly.
+
+There is no crossover and no tournament. One iteration is "sample cloud → measure →
+reshape cloud." The `cma` Python package hides batch size and exact update formulas;
+your script only runs ask/tell until maxfevals.
+
+After 200 evaluations, stop. Val pick from saved nets — same as GA.
+
+GOING DEEPER
+
+Bounds [0,1]³ clip or repair samples so decoded architectures stay valid. tolx and
+tolfun can stop early if movement and improvement are tiny. PMS_MAXEVAL caps cost.
+Sigma0=0.3 sets initial exploration radius in normalized space. SEED passed into opts
+when PMS_SEED is set.
+
+
+--- F5. CMA-ES math in plain language (beginner level) ---
+
+You do not need to implement this; you need to know what the symbols mean when you read
+Hansen's tutorial (arXiv:1604.00772).
+
+Variables. You search a vector x with three numbers (layer dial, width dial, activation
+dial). The algorithm maintains a mean vector m (center of the cloud) and a positive
+step size sigma (how far from m typical samples land). It also maintains a 3×3
+covariance matrix C that describes the shape of the cloud: whether samples spread
+equally in all directions or more along one diagonal (when increasing layers and
+neurons together helps, the cloud can tilt that way).
+
+Sampling (one new candidate). Conceptually:
+  1) Draw a random direction z from a standard 3D normal (bell curve in each axis,
+     centered at zero, independent).
+  2) Transform z using the current covariance (turn the sphere into an ellipsoid).
+  3) Scale by sigma and add m to get x.
+So x = m + (scaled, rotated random step). In your code, bounds keep x inside [0,1]³
+before decode.
+
+Objective. f(x) = training MSE after decode, train, predict on TRAIN. You want to
+minimize f. CMA-ES treats f as a black box: no derivatives of f are required.
+
+One generation of CMA-ES (tell). Among the batch of sampled x values:
+  • Rank them from lowest MSE to highest.
+  • Update m: shift the center toward the better points (better ranks get larger weight
+    in the average — not only the single best, so the update is stable).
+  • Update C: increase variance along directions from m toward points that beat the
+    median; decrease along directions that consistently fail (covariance matrix
+    adaptation).
+  • Update sigma: if recent steps reduced error quickly, allow larger steps; if not,
+    shrink sigma.
+
+Why this differs from GA mathematically. GA moves on a grid of integers by discrete
+jumps (mutation) and splice (crossover). CMA-ES moves a continuous probability model
+over R³ and only then rounds to integers. In low dimension (3 dials), adapting the
+shape of the sampling distribution is often more efficient than breeding 900 random
+integer strings — which matches your ~200 vs ~900 budget choice.
+
+GOING DEEPER (names only, for reading papers)
+
+Multivariate normal N(m, sigma² C). Eigen-decomposition C = B D² Bᵀ for sampling.
+Evolution paths and rank-mu update of C in full CMA-ES. Your project uses the standard
+`cma` defaults for population size λ and weights; you do not tune those in
+cmaes_mlp_runs.py.
+
+
+--- F6. After reading E and F — key differences in one place ---
+
+Same in both scripts:
+  Inner TRAIN fit with L-BFGS; search minimizes training MSE; medval < 20% saves net;
+  best saved net by val MAPE; outer test MAPE reported; log-T and input scaling fixed.
+
+Different:
+
+  Representation — GA: six integers (discrete blueprint). CMA-ES: three continuous
+  values in [0,1] then rounded (compact blueprint, uniform layer widths).
+
+  How trials are created — GA: tournament winners + two-point crossover + per-gene
+  integer mutation + elitism, repeated for 30 generations × 30 individuals. CMA-ES:
+  sample from Gaussian cloud around m, evaluate, update m, C, and sigma; repeat until
+  200 evaluations.
+
+  What is learned across trials — GA: implicit memory in the current population's
+  genes (no explicit model of "direction" in search space). CMA-ES: explicit memory in
+  (m, C, sigma) — where to sample next and how elongated the search ellipsoid is.
+
+  Cost default — ~900 vs ~200 full architecture trains per fold.
+
+  Octave alignment — GA matches population × generations; CMA-ES is the alternative
+  continuous search leg in the thesis.
+
+When someone asks "why not just use GA?" — you are already using it. When they ask
+"why add CMA-ES?" — to test whether a modern continuous evolution strategy finds
+comparable architectures with fewer trials and a different encoding. When they ask
+"do they learn weights?" — no; L-BFGS learns weights every time. The comparison is
+purely architecture search.
+
+
+================================================================================
+APPENDIX G — max_iter: WHAT IT IS AND WHY 300 vs 2000 (2026-10-07)
+================================================================================
+
+Companion to Appendices E and F. Here "max_iter" is only the inner weight trainer —
+not GA generations, not CMA-ES evaluations. Same pattern: PLAIN WALKTHROUGH, then
+GOING DEEPER. Values from build_mlp() in ga_mlp_runs.py (300) and
+cmaes_mlp_runs.py (2000).
+
+
+--- G1. What max_iter means in your scripts ---
+
+PLAIN WALKTHROUGH
+
+Every time the outer search picks an architecture, the script builds an MLP and must
+set the connection weights. That inner job is done by scikit-learn's MLPRegressor with
+solver="lbfgs". L-BFGS is an iterative optimizer: it takes a step, checks error, takes
+another step, and so on. max_iter is the hard ceiling on how many of those steps are
+allowed for that one architecture on that fold's inner TRAIN rows (~252 points).
+
+If the weights have already settled (loss barely moves), L-BFGS can stop before the
+ceiling — sklearn reports convergence. If the net is awkward or the loss landscape
+is flat, the optimizer may hit max_iter and stop anyway; the fit might be slightly
+unfinished, but you still get a trained net and a training MSE for the search.
+
+This number does not control how many chromosomes or CMA-ES samples you try. Those are
+POP_SIZE × N_GEN (~900) for GA and PMS_MAXEVAL (200) for CMA-ES. Think of two nested
+loops:
+
+  Outer loop: "which shape?" (GA or CMA-ES)
+  Inner loop: "given this shape, fit weights" (L-BFGS, capped by max_iter)
+
+Both runners use the same inner solver and the same data preprocessing; only the cap
+differs.
+
+GOING DEEPER
+
+early_stopping is OFF in both files (Octave PMS has no validation-based early stop
+during net training; lbfgs does not use it the way adam does). So max_iter is the main
+explicit brake on inner training cost per architecture. Env vars do not override
+max_iter in the current scripts — it is fixed in build_mlp().
+
+
+--- G2. Why GA uses 300 ---
+
+PLAIN WALKTHROUGH
+
+The GA leg is deliberately aligned with the legacy Octave PMS story: about thirty
+architectures per generation, thirty generations, so on the order of nine hundred full
+trains per fold. Each train is a complete L-BFGS run on the same small inner-train
+set.
+
+With nine hundred trains, the inner loop cannot afford to be huge on every try. A
+modest cap (300 iterations) keeps each candidate affordable and matches the spirit of
+the original pipeline and paper snippets (max_iter=300 in ga_mlp_runs.py and related
+docs). On ~250 training rows and small nets (3–4 layers, widths up to 55), many
+candidates converge well before 300; the cap mainly catches slow or ill-conditioned
+fits so one bad architecture does not burn unbounded time.
+
+The design goal is not "300 is mathematically optimal for L-BFGS." It is: fixed outer
+budget like Octave, predictable cost per fold, and a trainer setting that has been
+used consistently for the GA leg so results stay comparable to earlier Octave/Python GA
+work.
+
+GOING DEEPER
+
+Total inner L-BFGS steps per GA fold is on the order of 900 × (steps until stop or
+300). That dominates wall-clock alongside Python overhead. Raising max_iter for GA
+without cutting generations would multiply runtime roughly linearly. Lowering it would
+risk systematically under-fitting some architectures and biasing the search toward nets
+that happen to look good after a truncated fit — unfair to the GA encoding.
+
+
+--- G3. Why CMA-ES uses 2000 ---
+
+PLAIN WALKTHROUGH
+
+The CMA-ES leg spends its budget differently. You only evaluate about two hundred
+architectures per fold (PMS_MAXEVAL), not nine hundred. The outer search is already
+cheaper in "how many nets we build." The script trades some of that savings back into
+each inner fit: allow up to 2000 L-BFGS steps so every sampled point in the continuous
+search gets a fair chance to reach a good weight solution before you judge its training
+MSE.
+
+Why that matters for CMA-ES: the algorithm updates its mean and covariance from the
+ranking of training MSE values. If two architectures are actually similar but one was
+stopped early at a worse loss, the ranking noise can mislead the cloud — the search
+distribution adapts to sloppy scores. With fewer outer trials than GA, each evaluation
+carries more weight in the learning process, so giving L-BFGS more room to finish is
+a simple way to make those two hundred scores more trustworthy.
+
+Again, this is not claiming 2000 is the unique correct number. It is a deliberate
+asymmetric choice: fewer outer tries, deeper inner fits.
+
+GOING DEEPER
+
+README_CHEATSHEET mentions early_stopping for some experimental setups; the committed
+cmaes_mlp_runs.py does not enable it — only max_iter=2000. Worst-case inner work per
+fold is ~200 × 2000 L-BFGS iterations (upper bound; many runs stop earlier).
+
+
+--- G4. Selection rationale — how to defend the pair in one breath ---
+
+PLAIN WALKTHROUGH
+
+Fair comparison of architecture search does not require identical max_iter. What must
+stay aligned is the honest CV protocol, preprocessing, medval gate, val pick, and the
+same family of trainer (L-BFGS, same alpha, same activations searched). max_iter is a
+computational fairness knob tied to outer trial count:
+
+  • GA: many architectures (≈900) → moderate inner cap (300) → total work stays in
+    line with Octave PMS and with "sample the discrete space heavily."
+  • CMA-ES: few architectures (≈200) → higher inner cap (2000) → "each sample counts;
+    do not truncate weights while the ES is learning where to sample next."
+
+If you forced both to 300, CMA-ES might look worse partly because under-trained nets
+distort its ranking-based updates. If you forced both to 2000 with GA still at 900
+trials, GA folds would become much slower with only a small benefit on nets that
+already converged by step 300. The chosen pair optimizes for comparable total effort
+and for each method's role in the experiment, not for identical inner settings.
+
+GOING DEEPER
+
+For a strict ablation in the thesis you could report sensitivity: same outer budgets,
+swap max_iter (e.g. GA 2000 or CMA 300) and show whether architecture rankings change.
+That was not required for the main leg; the defaults above encode the engineering
+trade-off documented here. Neither value is tuned per-fold; both are global constants in
+build_mlp().
+
+
+--- G5. Quick answers after reading G ---
+
+What is max_iter? Maximum L-BFGS iterations per architecture train on inner TRAIN.
+
+Does it change the search space? No — only how fully weights are fit for each proposed
+shape.
+
+Why not one number for both? Outer trial counts differ (≈900 vs ≈200); inner cap
+balances cost and score quality for each outer loop.
+
+Where is it set? ga_mlp_runs.py build_mlp → 300; cmaes_mlp_runs.py build_mlp → 2000.
+
 
 End of memo.
