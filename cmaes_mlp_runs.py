@@ -184,15 +184,20 @@ def inner_split_indices(train_index, seed):
     return idx_train, idx_medval, idx_val
 
 
-def val_per_line_block(df, idx_val, val_preds, fold_idx):
-    """Per-row val diagnostics for the architecture selected on val MAPE."""
+def val_per_line_block(df, idx_val, val_preds, fold_idx, passed_gate):
+    """Per-row val diagnostics for the architecture selected on val MAPE.
+
+    passed_gate is 1 when at least one net cleared the medval 20% check, and 0
+    when the fold wrote the backup net. row_id is the 0-based master-CSV line.
+    """
+    idx_val = np.asarray(idx_val)
     block = df.iloc[idx_val].copy()
     val_preds = np.maximum(0.0, np.asarray(val_preds, float))
     t_true = block.iloc[:, -1].values.astype(float)
     block["prediction"] = val_preds
     abs_err = np.abs(t_true - val_preds)
     block["abs_err"] = abs_err
-    block["pct_err"] = abs_err / np.maximum(np.abs(t_true), 1e-8) * 100.0
+    block["abs_pct_err"] = abs_err / np.maximum(np.abs(t_true), 1e-8) * 100.0
     block["signed_pct_err"] = (
         (val_preds - t_true) / np.maximum(np.abs(t_true), 1e-8) * 100.0
     )
@@ -202,7 +207,9 @@ def val_per_line_block(df, idx_val, val_preds, fold_idx):
     k = np.ceil(n / np.maximum(s, 1e-8))
     block["K"] = k
     block["regime_sat"] = (k > m).astype(int)
-    block["fold"] = fold_idx
+    block["fold"] = int(fold_idx)
+    block["row_id"] = idx_val.astype(int)
+    block["passed_gate"] = int(passed_gate)
     return block
 
 
@@ -214,11 +221,13 @@ def val_per_line_column_names(num_inputs):
     names += [
         "prediction",
         "abs_err",
-        "pct_err",
+        "abs_pct_err",
         "signed_pct_err",
         "K",
         "regime_sat",
         "fold",
+        "row_id",
+        "passed_gate",
     ]
     return names
 
@@ -440,7 +449,9 @@ def run_cmaes_kfold():
 
         val_preds = best_model.predict(X_val)
         val_parts.append(
-            val_per_line_block(df, idx_val, val_preds, fold_idx)
+            val_per_line_block(
+                df, idx_val, val_preds, fold_idx, passed_gate=int(num_saved > 0)
+            )
         )
 
         # ── evaluate on the fold's held-out 20% (the reported MAPE) ─────

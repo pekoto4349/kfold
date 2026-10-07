@@ -1,7 +1,7 @@
 PHD FaaS SURROGATE EXPERIMENT — WORKING MEMO
 ============================================
 Purpose: plain-language reference to carry into new chats. Append new sections at the
-end under "APPENDIX" with date lines. Last updated: 2026-10-07 (CHAPTER 12 added).
+end under "APPENDIX" with date lines. Last updated: 2026-10-07 (CHAPTER 12 val columns extended).
 
 --- HOW TO USE THIS FILE ---
 - Read top-to-bottom for the full story once.
@@ -337,9 +337,13 @@ predicts every inner **val** row again. For each row it writes:
   • All input columns from the dataset (first three named S, N, M in the export).
   • True T (last column of the raw CSV row).
   • prediction (clamped to ≥ 0, same as test).
-  • abs_err, pct_err (absolute percent error), signed_pct_err (over/under-predict).
+  • abs_err, abs_pct_err (how wrong, in percent, always positive),
+    signed_pct_err (positive = guess too high, negative = guess too low).
   • K = ceil(N/S), regime_sat (1 if K > M, else 0).
   • fold (1..5).
+  • row_id (line number in the master CSV, starting at 0).
+  • passed_gate (1 if this fold's net passed the medval 20% check, 0 if the
+    backup net was used because nothing passed).
 
 Files are written once per full run, pooled over all folds:
 
@@ -389,10 +393,11 @@ by regime_sat or bins of M for exploratory tables.
 
 PLAIN WALKTHROUGH
 
-Load val_per_line_*.csv in pandas or Excel. Sort by pct_err descending — worst rows
-first. Group by regime_sat and compare mean pct_err (sat vs unsat). Bin M or K and
-compare medians. Merge GA and CMA files on (fold, S, N, M) to see which method fails
-on the same configuration.
+Load val_per_line_*.csv in pandas or Excel. Sort by abs_pct_err descending — worst
+rows first. Group by regime_sat and compare mean abs_pct_err (sat vs unsat). Bin M
+or K and compare medians. Merge GA and CMA files on (fold, S, N, M) to see which
+method fails on the same configuration. row_id jumps back to that line of the master
+CSV. passed_gate is 0 when that fold had to use the backup net.
 
 Remember: patterns on **val** suggest where to **try** a routed model; patterns on
 **held-out** (after you add error columns or post-process) support **claims**.
@@ -1572,6 +1577,29 @@ Why not one number for both? Outer trial counts differ (≈900 vs ≈200); inner
 balances cost and score quality for each outer loop.
 
 Where is it set? ga_mlp_runs.py build_mlp → 300; cmaes_mlp_runs.py build_mlp → 2000.
+
+
+================================================================================
+APPENDIX H — VAL FILE COLUMN CONVENIENCES (2026-10-07)
+================================================================================
+
+Same val rows as chapter 12. Nothing changed in the split, the search, the 20%
+gate, which net wins, or the test score. Three labels were added so the spreadsheet
+is easier to use later.
+
+abs_pct_err is the old pct_err column with a clearer name. It is how wrong the
+guess is, in percent, and it is always positive. 25 means 25% off. signed_pct_err
+is unchanged: +25 means the guess was too high, -25 means too low. The test script
+regime_from_heldout.py uses abs_pct_err for this same "how wrong" number. Sort the
+val file by abs_pct_err to see the worst S, N, M first.
+
+row_id is the line number in the master CSV, starting at 0. The first line of that
+file is 0. Use it to jump back to the same job in the spreadsheet.
+
+passed_gate is 1 when the fold's network passed the medval check (under 20% error)
+and was then picked on val. It is 0 when every candidate failed that check and the
+backup network was written instead. The errors are still filled in. The 0 tells you
+those lines came from the backup.
 
 
 End of memo.
