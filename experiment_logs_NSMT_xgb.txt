@@ -1,0 +1,33 @@
+
+======================================================================
+RUN TIMESTAMP : 2026-10-07 19:30:44
+DATA FILE     : master_dataset_NSMT.csv
+MODEL         : XGBoost (XGBRegressor)
+TRAINER       : gradient boosted trees, early stop on medval RMSE
+CONFIG        : 3 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMT
+TREES         : cap=500 depth=3 lr=0.05 subsample=0.8 colsample=1.0 lambda=1.0 early_stop=30
+SCALING       : none. Raw inputs, raw target. No log1p.
+PROTOCOL      : same outer 5-fold (seed 42) and same inner train/medval/val cut as ga_mlp_runs.py. Fit on train. Early stopping watches medval RMSE and does not see val or the outer test. passed_gate (<20% medval MAPE) is recorded and does not drop the model. Val is the per-line file. The held-out 20% is the reported MAPE.
+SEED          : 42
+METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds | MAPE in %, SMAPE on 0..200% scale
+──────────────────────────────────────────────────────────────────────
+  Fold 1: trees=491 depth=3  medvalMAPE=20.77%  gate=0  MAPE=24.20%  SMAPE=17.46%  MAE=3169.9ms  RMSE=7738.0ms  R2=0.9531  n=126  bad=4
+  Fold 2: trees=157 depth=3  medvalMAPE=21.16%  gate=0  MAPE=54.45%  SMAPE=24.93%  MAE=3228.0ms  RMSE=7011.4ms  R2=0.8982  n=126  bad=2
+  Fold 3: trees=219 depth=3  medvalMAPE=17.58%  gate=1  MAPE=18.08%  SMAPE=16.54%  MAE=2131.8ms  RMSE=4247.9ms  R2=0.9517  n=126  bad=2
+  Fold 4: trees=202 depth=3  medvalMAPE=19.59%  gate=1  MAPE=12.83%  SMAPE=13.36%  MAE=2710.1ms  RMSE=7848.7ms  R2=0.9367  n=126  bad=0
+  Fold 5: trees=283 depth=3  medvalMAPE=12.57%  gate=1  MAPE=22.97%  SMAPE=17.31%  MAE=3533.4ms  RMSE=11436.2ms  R2=0.8920  n=126  bad=2
+──────────────────────────────────────────────────────────────────────
+POOLED over all 630 rows:
+  POOL MAPE : 26.51%
+  POOL SMAPE: 17.92%
+  POOL MAE  : 2954.6 ms
+  POOL RMSE : 7993.4 ms
+  POOL R2   : 0.9266
+──────────────────────────────────────────────────────────────────────
+MEAN ± 95% t-CI ACROSS 5 FOLDS:
+AVG MAPE  : 26.51%  (std ± 16.25%  |  95% CI ± 20.18%  → [6.33%, 46.68%])
+AVG SMAPE : 17.92%  (std ± 4.25%  |  95% CI ± 5.28%  → [12.64%, 23.20%])
+AVG MAE   : 2954.64 ms  (std ± 546.10 ms  |  95% CI ± 677.96 ms  → [2276.68 ms, 3632.59 ms])
+AVG RMSE  : 7656.45 ms  (std ± 2567.32 ms  |  95% CI ± 3187.24 ms  → [4469.21 ms, 10843.69 ms])
+AVG R2    : 0.9264  (std ± 0.0293  |  95% CI ± 0.0364  → [0.8900, 0.9627])
+======================================================================

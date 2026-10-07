@@ -1,7 +1,7 @@
 PHD FaaS SURROGATE EXPERIMENT — WORKING MEMO
 ============================================
 Purpose: plain-language reference to carry into new chats. Append new sections at the
-end under "APPENDIX" with date lines. Last updated: 2026-10-07 (CHAPTER 12 val columns extended).
+end under "APPENDIX" with date lines. Last updated: 2026-10-07 (APPENDIX I: linreg and XGBoost runners).
 
 --- HOW TO USE THIS FILE ---
 - Read top-to-bottom for the full story once.
@@ -1600,6 +1600,65 @@ passed_gate is 1 when the fold's network passed the medval check (under 20% erro
 and was then picked on val. It is 0 when every candidate failed that check and the
 backup network was written instead. The errors are still filled in. The 0 tells you
 those lines came from the backup.
+
+
+================================================================================
+APPENDIX I — LINEAR REGRESSION AND XGBOOST RUNNERS (2026-10-07)
+================================================================================
+
+Appendix D is the design note. These two scripts are the implementation. They do
+not change GA, CMA-ES, or Octave.
+
+linreg_kfold.py
+  Straight line: T ≈ intercept + a·S + b·N + c·M (+ extra columns if the CSV has them).
+  Ordinary least squares. Raw knobs, raw target. No log, no MinMax, so a coefficient
+  is "how many milliseconds per unit of that knob."
+
+xgboost_kfold.py
+  A pile of small yes/no trees. Raw knobs, raw target. No log, no MinMax.
+  Fixed settings: up to 500 trees, depth 3, learning rate 0.05. It stops early when
+  the medval error (in milliseconds, RMSE) stops improving. No Optuna search.
+
+What is the same as ga_mlp_runs.py and cmaes_mlp_runs.py
+  Outer exam: 5 folds, shuffle seed 42, 126 test rows, every job tested once.
+  Inner cut of the other 504: train / medval / val, same sizes, same PMS_SEED.
+  Test score: MAPE, sMAPE, MAE, RMSE, R², negatives clamped to 0.
+  Held-out file has no header: inputs, true target, prediction, fold.
+  Val file has a header and the chapter 12 columns, including abs_pct_err, row_id,
+  and passed_gate.
+  regime_from_heldout.py accepts --linreg TAG and --xgb TAG.
+
+What is different, on purpose
+  There is no architecture search and no 20% rule that throws a model away.
+  passed_gate is still written. 1 means medval percent error was under 20. 0 means
+  it was not. The model is kept either way, because there is only one model.
+  The line is fit on train only. Medval is not used to draw the line.
+  XGBoost is fit on train, and medval is used only to decide when to stop adding
+  trees. Val is not used to fit or to stop. Val per-line is still "rows this model
+  did not train on."
+  Both scripts default to master_dataset_NSMT.csv and tag NSMT. Change DATA_FILE
+  and MODEL_TAG at the top to match a GA or CMA-ES run. Set the same PMS_SEED on
+  all of them or the val rows will not be the same jobs.
+
+Outputs
+  linreg_results/kfold_results_{TAG}_linreg.csv
+  linreg_results/heldout_predictions_{TAG}_linreg.csv
+  linreg_results/val_per_line_{TAG}_linreg.csv
+  experiment_logs_{TAG}_linreg.txt
+  xgb_results/kfold_results_{TAG}_xgb.csv
+  xgb_results/heldout_predictions_{TAG}_xgb.csv
+  xgb_results/val_per_line_{TAG}_xgb.csv
+  xgb_results/importance_{TAG}.csv
+  experiment_logs_{TAG}_xgb.txt
+
+Run, from /home/cgiannak/kfold
+  PMS_SEED=42 python3 linreg_kfold.py
+  PMS_SEED=42 python3 xgboost_kfold.py
+  python3 regime_from_heldout.py --linreg NSMT
+  python3 regime_from_heldout.py --xgb NSMT
+
+Leave-one-M twins are not in this appendix. Add them only after these 5-fold runs
+look right.
 
 
 End of memo.

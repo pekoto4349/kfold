@@ -1,0 +1,32 @@
+
+======================================================================
+RUN TIMESTAMP : 2026-10-07 19:30:43
+DATA FILE     : master_dataset_NSMT.csv
+MODEL         : Ordinary least squares (sklearn LinearRegression)
+TRAINER       : one straight line, fit on inner train only
+CONFIG        : 3 inputs -> 1 target | 5-fold CV (seed 42) | tag: NSMT
+SCALING       : none. Raw inputs, raw target. No log1p.
+PROTOCOL      : same outer 5-fold (seed 42) and same inner train/medval/val cut as ga_mlp_runs.py. Fit on train. Medval only sets passed_gate (<20%), it does not drop the line. Val is the per-line file. The held-out 20% is the reported MAPE.
+SEED          : 42
+METRICS       : per-fold, POOLED over all rows, AND mean ± 95% t-CI across folds | MAPE in %, SMAPE on 0..200% scale
+──────────────────────────────────────────────────────────────────────
+  Fold 1: intercept=39813.2  S=-316.896, N=3.4182, M=-1045.64  medvalMAPE=166.13%  gate=0  MAPE=146.13%  SMAPE=72.32%  MAE=13655.3ms  RMSE=26476.5ms  R2=0.4510  n=126  bad=10
+  Fold 2: intercept=42204.3  S=-364.755, N=4.47023, M=-1249.75  medvalMAPE=225.29%  gate=0  MAPE=107.17%  SMAPE=80.21%  MAE=10405.2ms  RMSE=15650.4ms  R2=0.4929  n=126  bad=9
+  Fold 3: intercept=35151.5  S=-266.121, N=3.67703, M=-1041.33  medvalMAPE=168.37%  gate=0  MAPE=105.25%  SMAPE=74.12%  MAE=8223.7ms  RMSE=12557.0ms  R2=0.5780  n=126  bad=7
+  Fold 4: intercept=34801.3  S=-255.603, N=3.79994, M=-1070.29  medvalMAPE=191.60%  gate=0  MAPE=105.03%  SMAPE=77.81%  MAE=11600.3ms  RMSE=22785.6ms  R2=0.4666  n=126  bad=9
+  Fold 5: intercept=33309.7  S=-261.423, N=3.45526, M=-936.157  medvalMAPE=221.26%  gate=0  MAPE=138.07%  SMAPE=66.54%  MAE=12004.5ms  RMSE=27227.8ms  R2=0.3880  n=126  bad=10
+──────────────────────────────────────────────────────────────────────
+POOLED over all 630 rows:
+  POOL MAPE : 120.33%
+  POOL SMAPE: 74.20%
+  POOL MAE  : 11177.8 ms
+  POOL RMSE : 21744.7 ms
+  POOL R2   : 0.4568
+──────────────────────────────────────────────────────────────────────
+MEAN ± 95% t-CI ACROSS 5 FOLDS:
+AVG MAPE  : 120.33%  (std ± 20.09%  |  95% CI ± 24.94%  → [95.38%, 145.27%])
+AVG SMAPE : 74.20%  (std ± 5.28%  |  95% CI ± 6.55%  → [67.65%, 80.75%])
+AVG MAE   : 11177.78 ms  (std ± 2020.12 ms  |  95% CI ± 2507.91 ms  → [8669.88 ms, 13685.69 ms])
+AVG RMSE  : 20939.46 ms  (std ± 6554.59 ms  |  95% CI ± 8137.29 ms  → [12802.17 ms, 29076.75 ms])
+AVG R2    : 0.4753  (std ± 0.0692  |  95% CI ± 0.0859  → [0.3894, 0.5612])
+======================================================================

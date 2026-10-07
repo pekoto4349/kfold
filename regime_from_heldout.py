@@ -8,7 +8,7 @@ Input CSVs have no header (same layout as pms_kfold heldout files):
   S, N, M, [extra inputs...], T, prediction, fold
 
 Works on Octave heldouts, ga_results/heldout_predictions_*_ga.csv,
-cmaes heldouts, or *_m_out heldout files — no rerun needed once preds exist.
+cmaes heldouts, linreg_results, xgb_results, or *_m_out heldout files.
 """
 import argparse
 import glob
@@ -162,6 +162,8 @@ def main():
     ap.add_argument("--octave", action="store_true", help="Load Octave fold heldouts")
     ap.add_argument("--ga", metavar="TAG", help="e.g. NSMT -> ga_results/heldout_*_TAG_ga.csv")
     ap.add_argument("--cmaes", metavar="TAG", help="Same for cmaes_results")
+    ap.add_argument("--linreg", metavar="TAG", help="Same for linreg_results")
+    ap.add_argument("--xgb", metavar="TAG", help="Same for xgb_results")
     ap.add_argument("--m-out", action="store_true", help="Use *_m_out.csv suffix with --ga/--cmaes")
     ap.add_argument("--neurons-layers", default="4-55")
     ap.add_argument("--model-tag", default="NSMT")
@@ -191,11 +193,29 @@ def main():
             path = os.path.join("cmaes_results", f"heldout_predictions_{args.cmaes}_cmaes.csv")
         df = load_heldout(path)
         label = args.label if args.label != "heldout" else f"cmaes_{args.cmaes}"
+    elif args.linreg:
+        name = (
+            f"heldout_predictions_{args.linreg}_linreg_m_out.csv"
+            if args.m_out
+            else f"heldout_predictions_{args.linreg}_linreg.csv"
+        )
+        path = os.path.join("linreg_results", name)
+        df = load_heldout(path)
+        label = args.label if args.label != "heldout" else f"linreg_{args.linreg}"
+    elif args.xgb:
+        name = (
+            f"heldout_predictions_{args.xgb}_xgb_m_out.csv"
+            if args.m_out
+            else f"heldout_predictions_{args.xgb}_xgb.csv"
+        )
+        path = os.path.join("xgb_results", name)
+        df = load_heldout(path)
+        label = args.label if args.label != "heldout" else f"xgb_{args.xgb}"
     elif args.heldout:
         df = load_heldout(args.heldout)
         label = args.label
     else:
-        ap.error("Provide --heldout, --octave, --ga TAG, or --cmaes TAG")
+        ap.error("Provide --heldout, --octave, --ga TAG, --cmaes TAG, --linreg TAG, or --xgb TAG")
 
     enriched = enrich(df)
     os.makedirs(args.out_dir, exist_ok=True)
